@@ -14,8 +14,8 @@ function Badge({ code }: { code: string }) {
 function FileName({ path }: { path: string }) {
   return (
     <span className="f-name" title={path}>
-      <span className="f-dir">{dirname(path)}</span>
       <span className="f-base">{basename(path)}</span>
+      <span className="f-dir">{dirname(path)}</span>
     </span>
   );
 }

@@ -1,7 +1,8 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { GRAPH_PAD, LANE_COLORS, LANE_W, ROW_H, parseRefs, type GraphData, type GraphRow, type Seg } from '../graph';
+import { DEFAULT_REFS_W, GRAPH_PAD, LANE_COLORS, LANE_W, ROW_H, parseRefs, type GraphData, type GraphRow, type Seg } from '../graph';
 import { Icon } from '../icons';
 import { initials, relativeDate } from '../util';
+import { Splitter } from './Splitter';
 
 interface Props {
   data: GraphData;
@@ -10,6 +11,8 @@ interface Props {
   matches: Set<string>;
   focus: { hash: string; nonce: number } | null;
   hasMore: boolean;
+  refsW: number;
+  onRefsW: (w: number) => void;
   onSelect: (hash: string) => void;
   onContext: (e: React.MouseEvent, hash: string) => void;
   onNearEnd: () => void;
@@ -114,7 +117,7 @@ const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSe
   );
 });
 
-export function GraphView({ data, remotes, selected, matches, focus, hasMore, onSelect, onContext, onNearEnd }: Props) {
+export function GraphView({ data, remotes, selected, matches, focus, hasMore, refsW, onRefsW, onSelect, onContext, onNearEnd }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(600);
@@ -151,12 +154,15 @@ export function GraphView({ data, remotes, selected, matches, focus, hasMore, on
     if (hasMore && el.scrollTop + el.clientHeight > el.scrollHeight - ROW_H * 40) onNearEnd();
   };
 
-  const cols = `230px ${graphW}px minmax(200px, 1fr) 150px 120px`;
+  const cols = `${refsW}px ${graphW}px minmax(160px, 1fr) 150px 120px`;
 
   return (
     <div className="graph" style={{ ['--cols' as string]: cols }}>
       <div className="g-head" style={{ gridTemplateColumns: cols }}>
-        <div>BRANCH / TAG</div>
+        <div className="hc-first">
+          BRANCH / TAG
+          <Splitter className="col-handle" label="Resize branch and tag column" value={refsW} min={120} max={420} onChange={onRefsW} onReset={() => onRefsW(DEFAULT_REFS_W)} />
+        </div>
         <div>GRAPH</div>
         <div>COMMIT MESSAGE</div>
         <div>AUTHOR</div>

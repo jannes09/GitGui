@@ -59,6 +59,36 @@ function safeFiles(files) {
 }
 
 const STASH_RE = /^stash@\{\d+\}$/;
+const HASH_RE = /^[0-9a-f]{40,64}$/;
+
+// ---- undo / redo -------------------------------------------------------
+// An undoable action is described by two snapshots of every local branch,
+// every tag and HEAD. Undo/redo moves the repository from one snapshot to the
+// other, but only if the repository is still exactly in the expected state.
+
+function canon(s) {
+  const sorted = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return JSON.stringify({ head: s.head, branches: sorted(s.branches), tags: sorted(s.tags) });
+}
+
+function validateState(s) {
+  if (!s || typeof s !== 'object' || !s.head || typeof s.head !== 'object') throw new Error('Invalid repository state');
+  const hash = (h) => {
+    if (!HASH_RE.test(h)) throw new Error('Invalid commit id in repository state');
+    return h;
+  };
+  const refMap = (m) => {
+    if (!m || typeof m !== 'object') throw new Error('Invalid repository state');
+    const out = {};
+    for (const [name, h] of Object.entries(m)) out[safeRef(name)] = hash(h);
+    return out;
+  };
+  return {
+    head: { branch: s.head.branch ? safeRef(s.head.branch) : null, hash: s.head.hash ? hash(s.head.hash) : null },
+    branches: refMap(s.branches),
+    tags: refMap(s.tags),
+  };
+}
 
 async function hasHead(repo) {
   const out = await run(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [0, 1] });
@@ -329,6 +359,66 @@ const handlers = {
     assertRepo(repo);
     if (!['soft', 'mixed', 'hard'].includes(mode)) throw new Error('Invalid reset mode');
     await run(repo, ['reset', `--${mode}`, safeRef(hash)]);
+  },
+
+  async snapshot({ repo }) {
+    assertRepo(repo);
+    const [headOut, curOut, refOut] = await Promise.all([
+      run(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [0, 1] }),
+      run(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { okCodes: [0, 1] }),
+      run(repo, ['for-each-ref', '--format=%(refname)%1f%(objectname)', 'refs/heads', 'refs/tags']),
+    ]);
+    const branches = {};
+    const tags = {};
+    for (const line of refOut.split('\n')) {
+      if (!line) continue;
+      const [ref, hash] = line.split('\x1f');
+      if (ref.startsWith('refs/heads/')) branches[ref.slice(11)] = hash;
+      else if (ref.startsWith('refs/tags/')) tags[ref.slice(10)] = hash;
+    }
+    return { head: { branch: curOut.trim() || null, hash: headOut.trim() || null }, branches, tags };
+  },
+
+  // Moves the repo from snapshot `from` to snapshot `to`. mode 'soft' keeps the
+  // undone changes staged (used for commits); 'keep' refuses to overwrite local edits.
+  async restoreState({ repo, from, to, mode }) {
+    assertRepo(repo);
+    const f = validateState(from);
+    const t = validateState(to);
+    if (mode !== 'soft' && mode !== 'keep') throw new Error('Invalid mode');
+    if (!t.head.hash) throw new Error('Cannot restore to a repository with no commits');
+
+    const current = await handlers.snapshot({ repo });
+    if (canon(current) !== canon(f)) {
+      throw new Error('STALE: The repository changed since this action, so it can no longer be undone or redone safely.');
+    }
+
+    // 1. move HEAD first: it is the step most likely to be refused (e.g. local edits in the way)
+    if (f.head.branch === t.head.branch) {
+      if (f.head.hash !== t.head.hash) {
+        if (t.head.branch) await run(repo, ['reset', mode === 'soft' ? '--soft' : '--keep', t.head.hash]);
+        else await run(repo, ['checkout', '--detach', t.head.hash]);
+      }
+    } else if (t.head.branch) {
+      if (f.branches[t.head.branch] !== t.head.hash) await run(repo, ['update-ref', `refs/heads/${t.head.branch}`, t.head.hash]);
+      await run(repo, ['checkout', t.head.branch]);
+    } else {
+      await run(repo, ['checkout', '--detach', t.head.hash]);
+    }
+
+    // 2. recreate or move the other refs, then remove the ones that did not exist
+    for (const [prefix, fromMap, toMap] of [['refs/heads/', f.branches, t.branches], ['refs/tags/', f.tags, t.tags]]) {
+      for (const [name, hash] of Object.entries(toMap)) {
+        if (prefix === 'refs/heads/' && name === t.head.branch) continue;
+        if (fromMap[name] !== hash) await run(repo, ['update-ref', prefix + name, hash]);
+      }
+      for (const name of Object.keys(fromMap)) {
+        if (!(name in toMap)) await run(repo, ['update-ref', '-d', prefix + name]);
+      }
+    }
+
+    const after = await handlers.snapshot({ repo });
+    if (canon(after) !== canon(t)) throw new Error('The repository was only partly restored. Check the branch list.');
   },
 
   async stashPush({ repo, message }) {

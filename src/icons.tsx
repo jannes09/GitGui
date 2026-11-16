@@ -19,6 +19,7 @@ const PATHS = {
   file: 'M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM13 2v7h7',
   back: 'M19 12H5M12 19l-7-7 7-7',
   undo: 'M3 7v6h6M3 13a9 9 0 1 0 3-7.7L3 8',
+  redo: 'M21 7v6h-6M21 13a9 9 0 1 1-3-7.7L21 8',
 } as const;
 
 export type IconName = keyof typeof PATHS;

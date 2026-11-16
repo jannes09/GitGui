@@ -2,17 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, isElectron, pickFolder } from './api';
 import { DiffView } from './components/DiffView';
 import { GraphView } from './components/GraphView';
+import { Splitter } from './components/Splitter';
 import { ContextMenu, PromptDialog, type MenuItem, type PromptSpec } from './components/Overlays';
 import { CommitPanel, StagingPanel } from './components/RightPanel';
 import { Sidebar, type SidebarItem } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
-import { WIP_HASH, computeGraph } from './graph';
+import { DEFAULT_REFS_W, WIP_HASH, computeGraph } from './graph';
 import { Icon } from './icons';
-import type { Commit, DiffTarget, RefsData, Selection, StatusData, StatusFile } from './types';
+import type { Commit, DiffTarget, RefsData, RepoSnapshot, Selection, StatusData, StatusFile, UndoOp } from './types';
 
 const LAST_REPO_KEY = 'gitgui.lastRepo';
 const RECENT_KEY = 'gitgui.recent';
 const PAGE = 1000;
+const MAX_HISTORY = 50;
+
+const SIDEBAR = { key: 'gitgui.sidebarWidth', def: 250, min: 180, max: 480 };
+const RIGHT = { key: 'gitgui.rightWidth', def: 380, min: 300, max: 640 };
+const REFS = { key: 'gitgui.refsWidth', def: DEFAULT_REFS_W, min: 120, max: 420 };
+
+function readWidth(p: { key: string; def: number; min: number; max: number }): number {
+  const n = Number(readStore(p.key));
+  return Number.isFinite(n) && n >= p.min && n <= p.max ? n : p.def;
+}
 
 function readStore(key: string): string | null {
   try {
@@ -58,6 +69,22 @@ export function App() {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [prompt, setPrompt] = useState<PromptSpec | null>(null);
   const [recent, setRecent] = useState<string[]>(readRecent);
+  const [undoStack, setUndoStack] = useState<UndoOp[]>([]);
+  const [redoStack, setRedoStack] = useState<UndoOp[]>([]);
+  const [sidebarW, setSidebarW] = useState(() => readWidth(SIDEBAR));
+  const [rightW, setRightW] = useState(() => readWidth(RIGHT));
+  const [refsW, setRefsW] = useState(() => readWidth(REFS));
+
+  useEffect(() => writeStore(SIDEBAR.key, String(sidebarW)), [sidebarW]);
+  useEffect(() => writeStore(RIGHT.key, String(rightW)), [rightW]);
+  useEffect(() => writeStore(REFS.key, String(refsW)), [refsW]);
+
+  const undoRef = useRef(undoStack);
+  const redoRef = useRef(redoStack);
+  const busyRef = useRef<string | null>(null);
+  undoRef.current = undoStack;
+  redoRef.current = redoStack;
+  busyRef.current = busy;
 
   const refsKey = useRef('');
   const limitRef = useRef(limit);
@@ -102,6 +129,8 @@ export function App() {
         setSel(null);
         setDiff(null);
         setQuery('');
+        setUndoStack([]);
+        setRedoStack([]);
         setLimit(PAGE);
         limitRef.current = PAGE;
         writeStore(LAST_REPO_KEY, info.root);
@@ -162,13 +191,27 @@ export function App() {
   /* ---------- actions ---------- */
 
   const act = useCallback(
-    async (label: string, fn: () => Promise<unknown>, opts: { ok?: string; log?: boolean } = {}) => {
+    async (
+      label: string,
+      fn: () => Promise<unknown>,
+      opts: { ok?: string; log?: boolean; undo?: { label: string; mode?: 'soft' | 'keep' } } = {},
+    ) => {
       const root = repoRef.current;
       if (!root) return false;
       setBusy(label);
       let ok = true;
       try {
+        const undo = opts.undo;
+        const before = undo ? await call<RepoSnapshot>('snapshot', { repo: root }).catch(() => null) : null;
         await fn();
+        if (undo && before?.head.hash) {
+          const after = await call<RepoSnapshot>('snapshot', { repo: root }).catch(() => null);
+          if (after && JSON.stringify(after) !== JSON.stringify(before)) {
+            const op: UndoOp = { label: undo.label, before, after, mode: undo.mode ?? 'keep' };
+            setUndoStack((s) => [...s, op].slice(-MAX_HISTORY));
+            setRedoStack([]);
+          }
+        }
         if (opts.ok) notify(opts.ok);
       } catch (e) {
         ok = false;
@@ -184,6 +227,64 @@ export function App() {
     },
     [reload, notify],
   );
+
+  const stepHistory = useCallback(
+    async (dir: 'undo' | 'redo') => {
+      const root = repoRef.current;
+      const stack = dir === 'undo' ? undoRef.current : redoRef.current;
+      const op = stack[stack.length - 1];
+      if (!root || !op || busyRef.current) return;
+      setBusy(dir === 'undo' ? 'Undoing' : 'Redoing');
+      try {
+        await call('restoreState', {
+          repo: root,
+          from: dir === 'undo' ? op.after : op.before,
+          to: dir === 'undo' ? op.before : op.after,
+          mode: op.mode,
+        });
+        if (dir === 'undo') {
+          setUndoStack((s) => s.slice(0, -1));
+          setRedoStack((s) => [...s, op]);
+        } else {
+          setRedoStack((s) => s.slice(0, -1));
+          setUndoStack((s) => [...s, op]);
+        }
+        notify(`${dir === 'undo' ? 'Undid' : 'Redid'}: ${op.label}`);
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg.startsWith('STALE:')) {
+          setUndoStack([]);
+          setRedoStack([]);
+        }
+        notify(msg.replace(/^STALE:\s*/, ''), true);
+      }
+      try {
+        await reload(root, true);
+      } catch {
+        /* the next focus or action refreshes again */
+      }
+      setBusy(null);
+    },
+    [reload, notify],
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        void stepHistory('undo');
+      } else if ((k === 'z' && e.shiftKey) || k === 'y') {
+        e.preventDefault();
+        void stepHistory('redo');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [stepHistory]);
 
   const git = useCallback(<T,>(method: string, args: object = {}) => call<T>(method, { repo: repoRef.current, ...args }), []);
 
@@ -207,11 +308,12 @@ export function App() {
       title: 'Create branch',
       label: from ? 'Branch name (created at the selected commit)' : 'Branch name (created at HEAD)',
       submit: 'Create branch',
-      onSubmit: (name) => void act('Creating branch', () => git('createBranch', { name, from }), { ok: `Created ${name}` }),
+      onSubmit: (name) =>
+        void act('Creating branch', () => git('createBranch', { name, from }), { ok: `Created ${name}`, undo: { label: `Create branch ${name}` } }),
     });
 
   const checkout = (ref: string, kind: 'local' | 'remote' | 'commit') =>
-    void act('Checking out', () => git('checkout', { ref, kind }), { ok: `Checked out ${ref}` });
+    void act('Checking out', () => git('checkout', { ref, kind }), { ok: `Checked out ${ref}`, undo: { label: `Checkout ${ref}` } });
 
   const focusHash = (hash: string) => setFocus({ hash, nonce: Date.now() });
 
@@ -273,20 +375,35 @@ export function App() {
             title: 'Create tag',
             label: 'Tag name',
             submit: 'Create tag',
-            onSubmit: (name) => void act('Tagging', () => git('createTag', { name, hash }), { ok: `Created tag ${name}` }),
+            onSubmit: (name) =>
+              void act('Tagging', () => git('createTag', { name, hash }), { ok: `Created tag ${name}`, undo: { label: `Create tag ${name}` } }),
           }),
       },
       { label: '', onClick: () => {}, separator: true },
-      { label: 'Cherry-pick commit', onClick: () => void act('Cherry-picking', () => git('cherryPick', { hash }), { ok: `Cherry-picked ${short}` }) },
-      { label: 'Revert commit', onClick: () => void act('Reverting', () => git('revert', { hash }), { ok: `Reverted ${short}` }) },
+      {
+        label: 'Cherry-pick commit',
+        onClick: () => void act('Cherry-picking', () => git('cherryPick', { hash }), { ok: `Cherry-picked ${short}`, undo: { label: `Cherry-pick ${short}` } }),
+      },
+      {
+        label: 'Revert commit',
+        onClick: () => void act('Reverting', () => git('revert', { hash }), { ok: `Reverted ${short}`, undo: { label: `Revert ${short}` } }),
+      },
       { label: '', onClick: () => {}, separator: true },
-      { label: 'Reset current branch here (soft)', onClick: () => void act('Resetting', () => git('reset', { hash, mode: 'soft' })) },
-      { label: 'Reset current branch here (mixed)', onClick: () => void act('Resetting', () => git('reset', { hash, mode: 'mixed' })) },
+      {
+        label: 'Reset current branch here (soft)',
+        onClick: () => void act('Resetting', () => git('reset', { hash, mode: 'soft' }), { undo: { label: `Soft reset to ${short}` } }),
+      },
+      {
+        label: 'Reset current branch here (mixed)',
+        onClick: () => void act('Resetting', () => git('reset', { hash, mode: 'mixed' }), { undo: { label: `Mixed reset to ${short}` } }),
+      },
       {
         label: 'Reset current branch here (hard)',
         danger: true,
         onClick: () => {
-          if (window.confirm(`Hard reset to ${short}? Uncommitted changes will be lost.`)) void act('Resetting', () => git('reset', { hash, mode: 'hard' }));
+          if (window.confirm(`Hard reset to ${short}? Uncommitted changes will be lost.`)) {
+            void act('Resetting', () => git('reset', { hash, mode: 'hard' }), { undo: { label: `Hard reset to ${short}` } });
+          }
         },
       },
       { label: '', onClick: () => {}, separator: true },
@@ -302,21 +419,23 @@ export function App() {
       const isCurrent = refs?.current === item.name;
       items.push(
         { label: 'Checkout', disabled: isCurrent, onClick: () => checkout(item.name, 'local') },
-        { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: isCurrent || !refs?.current, onClick: () => void act('Merging', () => git('merge', { ref: item.name }), { ok: `Merged ${item.name}` }) },
+        { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: isCurrent || !refs?.current, onClick: () => void act('Merging', () => git('merge', { ref: item.name }), { ok: `Merged ${item.name}`, undo: { label: `Merge ${item.name}` } }) },
         { label: 'Create branch here…', onClick: () => askBranch(item.name) },
         {
           label: 'Delete branch',
           danger: true,
           disabled: isCurrent,
           onClick: () => {
-            if (window.confirm(`Delete branch "${item.name}"?`)) void act('Deleting', () => git('deleteBranch', { name: item.name }), { ok: `Deleted ${item.name}` });
+            if (window.confirm(`Delete branch "${item.name}"?`)) {
+              void act('Deleting', () => git('deleteBranch', { name: item.name }), { ok: `Deleted ${item.name}`, undo: { label: `Delete branch ${item.name}` } });
+            }
           },
         },
       );
     } else if (item.kind === 'remote') {
       items.push(
         { label: 'Checkout (track)', onClick: () => checkout(item.name, 'remote') },
-        { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: !refs?.current, onClick: () => void act('Merging', () => git('merge', { ref: item.name }), { ok: `Merged ${item.name}` }) },
+        { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: !refs?.current, onClick: () => void act('Merging', () => git('merge', { ref: item.name }), { ok: `Merged ${item.name}`, undo: { label: `Merge ${item.name}` } }) },
       );
     } else if (item.kind === 'stash') {
       items.push(
@@ -370,7 +489,11 @@ export function App() {
         onSearchKey={onSearchKey}
         onOpen={() => void openDialog()}
         onFetch={() => void act('Fetching', () => git('fetch'), { ok: 'Fetched all remotes' })}
-        onPull={() => void act('Pulling', () => git('pull'), { ok: 'Pull complete' })}
+        undoLabel={undoStack.length ? undoStack[undoStack.length - 1].label : null}
+        redoLabel={redoStack.length ? redoStack[redoStack.length - 1].label : null}
+        onUndo={() => void stepHistory('undo')}
+        onRedo={() => void stepHistory('redo')}
+        onPull={() => void act('Pulling', () => git('pull'), { ok: 'Pull complete', undo: { label: 'Pull' } })}
         onPush={() => void act('Pushing', () => git('push'), { ok: 'Push complete' })}
         onBranch={() => askBranch()}
         onStash={() => {
@@ -384,8 +507,16 @@ export function App() {
       />
 
       {repo ? (
-        <div className="main">
+        <div className="main" style={{ ['--sb-w' as string]: `${sidebarW}px`, ['--rp-w' as string]: `${rightW}px` }}>
           <Sidebar refs={refs} onFocus={onSidebarFocus} onActivate={onSidebarActivate} onContext={sidebarMenu} />
+          <Splitter
+            label="Resize sidebar"
+            value={sidebarW}
+            min={SIDEBAR.min}
+            max={SIDEBAR.max}
+            onChange={setSidebarW}
+            onReset={() => setSidebarW(SIDEBAR.def)}
+          />
           <section className="center">
             {diff ? (
               <DiffView
@@ -403,12 +534,23 @@ export function App() {
                 matches={matchSet}
                 focus={focus}
                 hasMore={commits.length >= limit}
+                refsW={refsW}
+                onRefsW={setRefsW}
                 onSelect={(hash) => setSel(hash === WIP_HASH ? { kind: 'wip' } : { kind: 'commit', hash })}
                 onContext={(e, hash) => commitMenu(e, hash)}
                 onNearEnd={() => setLimit((l) => (commits.length >= l ? l + PAGE : l))}
               />
             )}
           </section>
+          <Splitter
+            invert
+            label="Resize details panel"
+            value={rightW}
+            min={RIGHT.min}
+            max={RIGHT.max}
+            onChange={setRightW}
+            onReset={() => setRightW(RIGHT.def)}
+          />
           <aside className="right">
             {sel?.kind === 'wip' && status ? (
               <StagingPanel
@@ -421,7 +563,12 @@ export function App() {
                 onStageAll={() => void act('Staging', () => git('stageAll'), { log: false })}
                 onUnstageAll={() => void act('Unstaging', () => git('unstageAll'), { log: false })}
                 onDiscard={discard}
-                onCommit={(message, amend) => act('Committing', () => git('commit', { message, amend }), { ok: amend ? 'Commit amended' : 'Commit created' })}
+                onCommit={(message, amend) =>
+                  act('Committing', () => git('commit', { message, amend }), {
+                    ok: amend ? 'Commit amended' : 'Commit created',
+                    undo: { label: amend ? 'Amend commit' : 'Commit', mode: 'soft' },
+                  })
+                }
               />
             ) : sel && sel.kind !== 'wip' ? (
               <CommitPanel key={sel.hash} repo={repo.root} hash={sel.hash} onOpen={setDiff} onError={notifyError} />

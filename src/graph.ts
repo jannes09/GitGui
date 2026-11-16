@@ -4,6 +4,7 @@ export const LANE_COLORS = ['#2dd4bf', '#a78bfa', '#fb923c', '#f472b6', '#60a5fa
 export const ROW_H = 34;
 export const LANE_W = 18;
 export const GRAPH_PAD = 18;
+export const DEFAULT_REFS_W = 230;
 
 export interface Seg {
   x1: number; // lane index

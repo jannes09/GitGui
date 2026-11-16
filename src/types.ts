@@ -71,6 +71,18 @@ export interface CommitDetail {
   message: string;
 }
 
+export interface RepoSnapshot {
+  head: { branch: string | null; hash: string | null };
+  branches: Record<string, string>;
+  tags: Record<string, string>;
+}
+export interface UndoOp {
+  label: string;
+  before: RepoSnapshot;
+  after: RepoSnapshot;
+  mode: 'soft' | 'keep';
+}
+
 export type Selection = { kind: 'wip' } | { kind: 'commit'; hash: string } | { kind: 'stash'; hash: string } | null;
 
 export interface DiffTarget {
