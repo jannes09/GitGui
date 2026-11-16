@@ -9,6 +9,7 @@
   --text-dim: #8b93a3;
   --accent: #2dd4bf;
   --danger: #f87171;
+  --warn: #fbbf24;
   --add: #4ade80;
   --mod: #fb923c;
   --ren: #a78bfa;
@@ -60,6 +61,19 @@ code, pre, .code { font-family: 'Cascadia Mono', Consolas, 'SF Mono', monospace;
 }
 .tb-repo:not(.static):hover { background: var(--bg-hover); }
 .tb-repo.static { cursor: default; }
+.tb-repo.detached { border-color: var(--warn); color: var(--warn); }
+.tb-repo.detached small { color: var(--warn); }
+
+.banner {
+  flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 7px 14px; background: rgba(251, 191, 36, 0.12);
+  border-bottom: 1px solid rgba(251, 191, 36, 0.35); color: var(--text);
+}
+.banner > svg { color: var(--warn); flex: none; }
+.banner-text { flex: 1 1 280px; min-width: 0; }
+.banner-text strong { color: var(--warn); }
+.banner-text code { color: var(--text); }
+.banner-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .tb-repo-text { display: flex; flex-direction: column; text-align: left; line-height: 1.15; min-width: 0; }
 .tb-repo-text small { font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
 .tb-repo-text strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }

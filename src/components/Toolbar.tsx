@@ -64,7 +64,7 @@ export function Toolbar(p: Props) {
           <Icon name="down" size={13} />
         </button>
         {has && (
-          <div className="tb-repo static">
+          <div className={'tb-repo static' + (p.branch === null ? ' detached' : '')}>
             <Icon name="branch" size={16} />
             <span className="tb-repo-text">
               <small>branch</small>

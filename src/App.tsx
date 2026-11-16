@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, isElectron, pickFolder } from './api';
+import { DetachedBanner } from './components/DetachedBanner';
 import { DiffView } from './components/DiffView';
 import { GraphView } from './components/GraphView';
 import { Splitter } from './components/Splitter';
@@ -315,6 +316,30 @@ export function App() {
   const checkout = (ref: string, kind: 'local' | 'remote' | 'commit') =>
     void act('Checking out', () => git('checkout', { ref, kind }), { ok: `Checked out ${ref}`, undo: { label: `Checkout ${ref}` } });
 
+  // Branches that can be checked out from a commit: local branches pointing at it, and
+  // remote branches pointing at it that have no local branch of the same name yet.
+  const branchesAt = (hash: string) => {
+    const localNames = new Set((refs?.branches ?? []).map((b) => b.name));
+    const locals = (refs?.branches ?? []).filter((b) => b.hash === hash && !b.current).map((b) => b.name);
+    const remotes = (refs?.remoteBranches ?? [])
+      .filter((r) => r.hash === hash && !localNames.has(r.name.slice(r.name.indexOf('/') + 1)))
+      .map((r) => r.name);
+    return [
+      ...locals.map((name) => ({ name, kind: 'local' as const, label: `Checkout ${name}` })),
+      ...remotes.map((name) => ({ name, kind: 'remote' as const, label: `Checkout ${name} (new local branch)` })),
+    ];
+  };
+
+  const activateCommit = (e: React.MouseEvent, hash: string) => {
+    if (hash === WIP_HASH) return;
+    const targets = branchesAt(hash);
+    if (targets.length === 1) checkout(targets[0].name, targets[0].kind);
+    else if (targets.length > 1) {
+      setMenu({ x: e.clientX, y: e.clientY, items: targets.map((t) => ({ label: t.label, onClick: () => checkout(t.name, t.kind) })) });
+    } else if ((refs?.branches ?? []).some((b) => b.hash === hash && b.current)) notify(`Already on ${refs?.current}`);
+    else notify('No branch points here. Right-click the commit to create a branch or check it out.');
+  };
+
   const focusHash = (hash: string) => setFocus({ hash, nonce: Date.now() });
 
   /* ---------- graph data ---------- */
@@ -365,8 +390,11 @@ export function App() {
     e.preventDefault();
     if (hash === WIP_HASH) return;
     const short = hash.slice(0, 7);
+    const branchItems: MenuItem[] = branchesAt(hash).map((t) => ({ label: t.label, onClick: () => checkout(t.name, t.kind) }));
+    if (branchItems.length) branchItems.push({ label: '', onClick: () => {}, separator: true });
     const items: MenuItem[] = [
-      { label: 'Checkout this commit', onClick: () => checkout(hash, 'commit') },
+      ...branchItems,
+      { label: 'Checkout this commit (detached HEAD)', onClick: () => checkout(hash, 'commit') },
       { label: 'Create branch here…', onClick: () => askBranch(hash) },
       {
         label: 'Create tag here…',
@@ -474,6 +502,14 @@ export function App() {
 
   const selectedHash = sel?.kind === 'wip' ? WIP_HASH : sel?.kind === 'commit' ? sel.hash : null;
   const branchName = status?.branch ?? refs?.current ?? null;
+  const detachedAt = repo && refs && refs.current === null ? refs.head : null;
+
+  const switchBranchMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation(); // the menu closes on any window click, including this one
+    const r = e.currentTarget.getBoundingClientRect();
+    const items: MenuItem[] = (refs?.branches ?? []).map((b) => ({ label: b.name, onClick: () => checkout(b.name, 'local') }));
+    setMenu({ x: r.left, y: r.bottom + 4, items });
+  };
 
   return (
     <div className="app">
@@ -505,6 +541,18 @@ export function App() {
           void act('Popping stash', () => git('stashPop', { ref: refs.stashes[0].ref }), { ok: 'Stash applied and dropped' });
         }}
       />
+
+      {detachedAt && (
+        <DetachedBanner
+          hash={detachedAt}
+          atHead={(refs?.branches ?? []).filter((b) => b.hash === detachedAt).map((b) => b.name)}
+          hasBranches={(refs?.branches.length ?? 0) > 0}
+          busy={busy !== null}
+          onCheckout={(name) => checkout(name, 'local')}
+          onSwitch={switchBranchMenu}
+          onCreate={() => askBranch()}
+        />
+      )}
 
       {repo ? (
         <div className="main" style={{ ['--sb-w' as string]: `${sidebarW}px`, ['--rp-w' as string]: `${rightW}px` }}>
@@ -538,6 +586,7 @@ export function App() {
                 onRefsW={setRefsW}
                 onSelect={(hash) => setSel(hash === WIP_HASH ? { kind: 'wip' } : { kind: 'commit', hash })}
                 onContext={(e, hash) => commitMenu(e, hash)}
+                onActivate={activateCommit}
                 onNearEnd={() => setLimit((l) => (commits.length >= l ? l + PAGE : l))}
               />
             )}

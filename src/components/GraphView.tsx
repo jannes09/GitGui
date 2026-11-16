@@ -15,6 +15,7 @@ interface Props {
   onRefsW: (w: number) => void;
   onSelect: (hash: string) => void;
   onContext: (e: React.MouseEvent, hash: string) => void;
+  onActivate: (e: React.MouseEvent, hash: string) => void;
   onNearEnd: () => void;
 }
 
@@ -48,9 +49,10 @@ interface RowProps {
   match: boolean;
   onSelect: (hash: string) => void;
   onContext: (e: React.MouseEvent, hash: string) => void;
+  onActivate: (e: React.MouseEvent, hash: string) => void;
 }
 
-const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSelect, onContext }: RowProps) {
+const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSelect, onContext, onActivate }: RowProps) {
   const c = row.commit;
   const color = LANE_COLORS[row.color];
   const labels = useMemo(() => parseRefs(c.refsRaw, remotes), [c.refsRaw, remotes]);
@@ -62,6 +64,7 @@ const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSe
       className={'g-row' + (selected ? ' selected' : '') + (match ? ' match' : '') + (row.wip ? ' wip' : '')}
       style={{ top, height: ROW_H }}
       onClick={() => onSelect(c.hash)}
+      onDoubleClick={(e) => onActivate(e, c.hash)}
       onContextMenu={(e) => onContext(e, c.hash)}
     >
       <div className="c-refs">
@@ -117,7 +120,7 @@ const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSe
   );
 });
 
-export function GraphView({ data, remotes, selected, matches, focus, hasMore, refsW, onRefsW, onSelect, onContext, onNearEnd }: Props) {
+export function GraphView({ data, remotes, selected, matches, focus, hasMore, refsW, onRefsW, onSelect, onContext, onActivate, onNearEnd }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(600);
@@ -181,6 +184,7 @@ export function GraphView({ data, remotes, selected, matches, focus, hasMore, re
               match={matches.has(row.commit.hash)}
               onSelect={onSelect}
               onContext={onContext}
+              onActivate={onActivate}
             />
           ))}
         </div>
