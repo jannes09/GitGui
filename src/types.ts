@@ -6,6 +6,8 @@ export interface Commit {
   date: number; // unix seconds
   refsRaw: string;
   subject: string;
+  /** set on rows that represent a stash (e.g. "stash@{0}") rather than a real history commit */
+  stashRef?: string;
 }
 
 export interface LocalBranch {
@@ -29,6 +31,8 @@ export interface Stash {
   hash: string;
   message: string;
   date: number;
+  /** the commit the stash was made on */
+  parent: string | null;
 }
 export interface RefsData {
   head: string | null;

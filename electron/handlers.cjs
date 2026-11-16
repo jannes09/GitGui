@@ -16,11 +16,16 @@ const ENV = {
 };
 delete ENV.ELECTRON_RUN_AS_NODE;
 
-const BASE_ARGS = ['--literal-pathspecs', '-c', 'core.quotepath=false', '-c', 'color.ui=false'];
+const BASE_ARGS = ['-c', 'core.quotepath=false', '-c', 'color.ui=false'];
+// File paths are always treated literally (no ":(glob)" style magic from odd file names).
+// Commands that take no paths opt out with { literal: false}: `git stash push -u` silently
+// leaves untracked files on disk when this flag is set.
+const LITERAL_ARGS = ['--literal-pathspecs'];
 
 function run(repo, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', [...BASE_ARGS, ...args], { cwd: repo, env: ENV, windowsHide: true });
+    const global = opts.literal === false ? BASE_ARGS : [...LITERAL_ARGS, ...BASE_ARGS];
+    const child = spawn('git', [...global, ...args], { cwd: repo, env: ENV, windowsHide: true });
     const out = [];
     const err = [];
     child.stdout.on('data', (d) => out.push(d));
@@ -108,7 +113,7 @@ const handlers = {
     const [refOut, remoteOut, stashOut, headOut, curOut] = await Promise.all([
       run(repo, ['for-each-ref', `--format=${fmt}`, 'refs/heads', 'refs/remotes', 'refs/tags']),
       run(repo, ['remote']),
-      run(repo, ['stash', 'list', '--format=%gd%x1f%H%x1f%gs%x1f%at']).catch(() => ''),
+      run(repo, ['stash', 'list', '--format=%gd%x1f%H%x1f%gs%x1f%at%x1f%P']).catch(() => ''),
       run(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [0, 1] }),
       run(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { okCodes: [0, 1] }),
     ]);
@@ -132,8 +137,9 @@ const handlers = {
       .split('\n')
       .filter(Boolean)
       .map((l) => {
-        const [ref, hash, message, at] = l.split('\x1f');
-        return { ref, hash, message, date: Number(at) };
+        const [ref, hash, message, at, parents] = l.split('\x1f');
+        // a stash commit's first parent is the commit the stash was made on
+        return { ref, hash, message, date: Number(at), parent: (parents || '').split(' ')[0] || null };
       });
     return {
       head: headOut.trim() || null,
@@ -345,7 +351,9 @@ const handlers = {
   },
   async merge({ repo, ref }) {
     assertRepo(repo);
-    await run(repo, ['merge', '--no-edit', safeRef(ref)]);
+    const out = await run(repo, ['merge', '--no-edit', safeRef(ref)]);
+    // tell the UI what happened: a fast-forward creates no merge commit, so it is easy to miss
+    return { fastForward: /Fast-forward/.test(out), upToDate: /Already up to date/.test(out) };
   },
   async cherryPick({ repo, hash }) {
     assertRepo(repo);
@@ -425,7 +433,7 @@ const handlers = {
     assertRepo(repo);
     const args = ['stash', 'push', '--include-untracked'];
     if (typeof message === 'string' && message.trim()) args.push('-m', message.trim());
-    await run(repo, args);
+    await run(repo, args, { literal: false });
   },
   async stashPop({ repo, ref }) {
     assertRepo(repo);

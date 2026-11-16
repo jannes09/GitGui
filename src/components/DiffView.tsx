@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api';
 import { Icon } from '../icons';
 import type { DiffTarget } from '../types';
+import { wordDiff, type Seg } from '../wordDiff';
 
 interface Line {
   type: 'ctx' | 'add' | 'del' | 'meta';
   text: string;
   oldNo?: number;
   newNo?: number;
+  /** word-level breakdown of a modified line; absent when the whole line differs */
+  segs?: Seg[];
 }
 interface Hunk {
   header: string;
@@ -48,7 +51,43 @@ function parseDiff(text: string): ParsedDiff {
     else if (ch === '\\') cur.lines.push({ type: 'meta', text: row });
     else cur.lines.push({ type: 'ctx', text: body, oldNo: o++, newNo: n++ });
   }
+  hunks.forEach(markWordChanges);
   return { head, hunks };
+}
+
+/** Pairs each run of removed lines with the added lines that follow it and diffs them word by word. */
+function markWordChanges(h: Hunk) {
+  const lines = h.lines;
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].type !== 'del') {
+      i++;
+      continue;
+    }
+    const delStart = i;
+    while (i < lines.length && lines[i].type === 'del') i++;
+    const addStart = i;
+    while (i < lines.length && lines[i].type === 'add') i++;
+    const pairs = Math.min(addStart - delStart, i - addStart);
+    for (let k = 0; k < pairs; k++) {
+      const d = lines[delStart + k];
+      const a = lines[addStart + k];
+      const w = wordDiff(d.text, a.text);
+      if (w) {
+        d.segs = w.a;
+        a.segs = w.b;
+      }
+    }
+  }
+}
+
+function LineText({ line }: { line: Line }) {
+  if (!line.segs) return <>{line.text}</>;
+  return (
+    <>
+      {line.segs.map((s, i) => (s.changed ? <span key={i} className="w">{s.text}</span> : <span key={i}>{s.text}</span>))}
+    </>
+  );
 }
 
 interface Props {
@@ -121,7 +160,7 @@ export function DiffView({ repo, target, onClose, onChanged, onError }: Props) {
                 <span className="ln">{l.oldNo ?? ''}</span>
                 <span className="ln">{l.newNo ?? ''}</span>
                 <span className="sign">{l.type === 'add' ? '+' : l.type === 'del' ? '-' : ''}</span>
-                <span className="code">{l.text}</span>
+                <span className="code"><LineText line={l} /></span>
               </div>
             ))}
           </div>

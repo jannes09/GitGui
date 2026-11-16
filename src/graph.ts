@@ -20,6 +20,7 @@ export interface GraphRow {
   segs: Seg[];
   merge: boolean;
   wip?: boolean;
+  stash?: boolean;
 }
 export interface GraphData {
   rows: GraphRow[];
@@ -89,7 +90,7 @@ export function computeGraph(commits: Commit[]): GraphData {
 
     while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
     maxLanes = Math.max(maxLanes, before.length, lanes.length, col + 1);
-    rows.push({ commit: c, col, color, segs, merge: c.parents.length > 1, wip: c.hash === WIP_HASH });
+    rows.push({ commit: c, col, color, segs, merge: c.parents.length > 1, wip: c.hash === WIP_HASH, stash: c.stashRef !== undefined });
   }
   return { rows, maxLanes };
 }

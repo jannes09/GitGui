@@ -127,6 +127,38 @@ test('undo does not overwrite local edits it would clobber', async () => {
   assert.equal(git(repo, 'rev-parse', 'HEAD'), after.head.hash);
 });
 
+test('stashing removes untracked files from the working tree and pop brings them back', async () => {
+  const repo = makeRepo();
+  fs.writeFileSync(path.join(repo, 'new.txt'), 'untracked\n');
+  fs.appendFileSync(path.join(repo, 'a.txt'), 'tracked edit\n');
+  await rpc('stashPush', { repo, message: 'with untracked' });
+
+  assert.equal(fs.existsSync(path.join(repo, 'new.txt')), false, 'untracked file must be gone after stash');
+  assert.equal(git(repo, 'status', '--porcelain'), '');
+
+  await rpc('stashPop', { repo, ref: 'stash@{0}' });
+  assert.equal(fs.existsSync(path.join(repo, 'new.txt')), true);
+  assert.match(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8'), /tracked edit/);
+});
+
+test('refs reports the commit each stash was made on', async () => {
+  const repo = makeRepo();
+  const first = git(repo, 'rev-parse', 'HEAD');
+  fs.appendFileSync(path.join(repo, 'a.txt'), 'dirty\n');
+  await rpc('stashPush', { repo, message: 'wip one' });
+  commitFile(repo, 'a.txt', 'two', 'second');
+  const second = git(repo, 'rev-parse', 'HEAD');
+  fs.appendFileSync(path.join(repo, 'a.txt'), 'dirty again\n');
+  await rpc('stashPush', { repo, message: 'wip two' });
+
+  const { stashes } = await rpc('refs', { repo });
+  assert.equal(stashes.length, 2);
+  assert.equal(stashes[0].ref, 'stash@{0}');
+  assert.equal(stashes[0].parent, second); // newest stash was made on the second commit
+  assert.equal(stashes[1].parent, first);
+  assert.match(stashes[0].message, /wip two/);
+});
+
 test('rejects malformed state from the renderer', async () => {
   const repo = makeRepo();
   const good = await rpc('snapshot', { repo });

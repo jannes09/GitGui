@@ -34,6 +34,14 @@ create / delete branch, create tag, merge, pull, cherry-pick, revert and reset. 
 before/after snapshot of HEAD, local branches and tags. Undo is refused if the repository changed outside the
 app since, or if it would overwrite local edits. Fetch, push, stash and staging are not undoable.
 
+**Diffs** highlight the exact words that changed inside a modified line, and Up / Down arrows walk through the
+changed files (unstaged, then staged, or the files of the selected commit), opening each diff.
+
+**Graph:** stashes appear as dashed rows above the commit they were made on (right-click to pop, apply or drop),
+branch pills show `↑` / `↓` for unpushed / unpulled commits, and a commit's right-click menu offers checkout and
+merge for every branch on it. Double-click a commit that has a branch label to check that branch out. If
+uncommitted changes block a checkout you are offered "Stash & checkout".
+
 **Resizable panels:** drag the dividers beside the sidebar and the details panel, or the edge of the
 BRANCH / TAG column header. Double-click resets, arrow keys nudge, and widths are remembered.
 

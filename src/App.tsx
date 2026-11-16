@@ -4,10 +4,11 @@ import { DetachedBanner } from './components/DetachedBanner';
 import { DiffView } from './components/DiffView';
 import { GraphView } from './components/GraphView';
 import { Splitter } from './components/Splitter';
-import { ContextMenu, PromptDialog, type MenuItem, type PromptSpec } from './components/Overlays';
+import { ConfirmDialog, ContextMenu, PromptDialog, type ConfirmSpec, type MenuItem, type PromptSpec } from './components/Overlays';
 import { CommitPanel, StagingPanel } from './components/RightPanel';
 import { Sidebar, type SidebarItem } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
+import { parseTrack } from './util';
 import { DEFAULT_REFS_W, WIP_HASH, computeGraph } from './graph';
 import { Icon } from './icons';
 import type { Commit, DiffTarget, RefsData, RepoSnapshot, Selection, StatusData, StatusFile, UndoOp } from './types';
@@ -69,6 +70,7 @@ export function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [prompt, setPrompt] = useState<PromptSpec | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
   const [recent, setRecent] = useState<string[]>(readRecent);
   const [undoStack, setUndoStack] = useState<UndoOp[]>([]);
   const [redoStack, setRedoStack] = useState<UndoOp[]>([]);
@@ -195,7 +197,13 @@ export function App() {
     async (
       label: string,
       fn: () => Promise<unknown>,
-      opts: { ok?: string; log?: boolean; undo?: { label: string; mode?: 'soft' | 'keep' } } = {},
+      opts: {
+        ok?: string | ((result: unknown) => string);
+        log?: boolean;
+        undo?: { label: string; mode?: 'soft' | 'keep' };
+        /** return true when the failure was handled (e.g. by opening a dialog) so no error toast is shown */
+        onError?: (message: string) => boolean;
+      } = {},
     ) => {
       const root = repoRef.current;
       if (!root) return false;
@@ -204,7 +212,7 @@ export function App() {
       try {
         const undo = opts.undo;
         const before = undo ? await call<RepoSnapshot>('snapshot', { repo: root }).catch(() => null) : null;
-        await fn();
+        const result = await fn();
         if (undo && before?.head.hash) {
           const after = await call<RepoSnapshot>('snapshot', { repo: root }).catch(() => null);
           if (after && JSON.stringify(after) !== JSON.stringify(before)) {
@@ -213,10 +221,11 @@ export function App() {
             setRedoStack([]);
           }
         }
-        if (opts.ok) notify(opts.ok);
+        if (opts.ok) notify(typeof opts.ok === 'function' ? opts.ok(result) : opts.ok);
       } catch (e) {
         ok = false;
-        notify((e as Error).message, true);
+        const msg = (e as Error).message;
+        if (!opts.onError?.(msg)) notify(msg, true);
       }
       try {
         await reload(root, opts.log ?? true);
@@ -313,8 +322,39 @@ export function App() {
         void act('Creating branch', () => git('createBranch', { name, from }), { ok: `Created ${name}`, undo: { label: `Create branch ${name}` } }),
     });
 
-  const checkout = (ref: string, kind: 'local' | 'remote' | 'commit') =>
-    void act('Checking out', () => git('checkout', { ref, kind }), { ok: `Checked out ${ref}`, undo: { label: `Checkout ${ref}` } });
+  // Git refuses to switch when uncommitted changes would be overwritten. Instead of a bare error,
+  // offer to stash those changes first (they stay in the stash list and show in the graph).
+  const checkout = (ref: string, kind: 'local' | 'remote' | 'commit') => {
+    const run = (stashFirst: boolean) =>
+      act(
+        stashFirst ? 'Stashing and checking out' : 'Checking out',
+        async () => {
+          if (stashFirst) await git('stashPush', { message: `Auto-stash before checkout of ${ref}` });
+          await git('checkout', { ref, kind });
+        },
+        {
+          ok: stashFirst ? `Stashed your changes and checked out ${ref}` : `Checked out ${ref}`,
+          undo: { label: `Checkout ${ref}` },
+          onError: stashFirst
+            ? undefined
+            : (msg) => {
+                if (!/would be overwritten by checkout/.test(msg)) return false;
+                const files = msg.split('\n').filter((l) => l.startsWith('\t')).map((l) => `• ${l.trim()}`);
+                setConfirm({
+                  title: `Can't switch to ${ref} yet`,
+                  message:
+                    'These files have changes that checking out would overwrite:\n' +
+                    (files.length ? files.join('\n') : '• (see the changes panel)') +
+                    '\n\nStash them and switch? You can pop the stash afterwards.',
+                  confirm: 'Stash & checkout',
+                  onConfirm: () => void run(true),
+                });
+                return true;
+              },
+        },
+      );
+    void run(false);
+  };
 
   // Branches that can be checked out from a commit: local branches pointing at it, and
   // remote branches pointing at it that have no local branch of the same name yet.
@@ -330,8 +370,41 @@ export function App() {
     ];
   };
 
+  // Every branch (local, or remote) at a commit that could be merged into the current branch.
+  const mergeTargetsAt = (hash: string) => {
+    if (!refs?.current) return [];
+    const locals = refs.branches.filter((b) => b.hash === hash && !b.current).map((b) => b.name);
+    const remotes = refs.remoteBranches.filter((r) => r.hash === hash).map((r) => r.name);
+    return [...locals, ...remotes];
+  };
+  const merge = (name: string) => {
+    const into = refs?.current ?? 'the current branch';
+    void act('Merging', () => git<{ fastForward: boolean; upToDate: boolean }>('merge', { ref: name }), {
+      ok: (r) => {
+        const res = r as { fastForward: boolean; upToDate: boolean } | null;
+        if (res?.upToDate) return `${name} is already merged into ${into}`;
+        if (res?.fastForward) return `Fast-forwarded ${into} to ${name} (no merge commit needed)`;
+        return `Merged ${name} into ${into}`;
+      },
+      undo: { label: `Merge ${name}` },
+    });
+  };
+
+  const stashItems = (ref: string): MenuItem[] => [
+    { label: 'Pop stash', onClick: () => void act('Popping stash', () => git('stashPop', { ref }), { ok: 'Stash applied and dropped' }) },
+    { label: 'Apply stash', onClick: () => void act('Applying stash', () => git('stashApply', { ref }), { ok: 'Stash applied' }) },
+    {
+      label: 'Drop stash',
+      danger: true,
+      onClick: () => {
+        if (window.confirm('Drop this stash? This cannot be undone.')) void act('Dropping stash', () => git('stashDrop', { ref }));
+      },
+    },
+  ];
+
   const activateCommit = (e: React.MouseEvent, hash: string) => {
     if (hash === WIP_HASH) return;
+    if (stashByHash.has(hash)) return notify('Right-click a stash to pop, apply or drop it.');
     const targets = branchesAt(hash);
     if (targets.length === 1) checkout(targets[0].name, targets[0].kind);
     else if (targets.length > 1) {
@@ -344,8 +417,36 @@ export function App() {
 
   /* ---------- graph data ---------- */
 
+  // Stashes appear as their own rows, directly above the commit they were made on.
+  const withStashes = useMemo(() => {
+    const byParent = new Map<string, Commit[]>();
+    for (const s of refs?.stashes ?? []) {
+      if (!s.parent) continue;
+      const row: Commit = { hash: s.hash, parents: [s.parent], author: '', email: '', date: s.date, refsRaw: '', subject: s.message, stashRef: s.ref };
+      byParent.set(s.parent, [...(byParent.get(s.parent) ?? []), row]);
+    }
+    if (byParent.size === 0) return commits;
+    const out: Commit[] = [];
+    for (const c of commits) {
+      out.push(...(byParent.get(c.hash) ?? []), c);
+    }
+    return out;
+  }, [commits, refs?.stashes]);
+
+  const stashByHash = useMemo(() => new Map((refs?.stashes ?? []).map((s) => [s.hash, s])), [refs?.stashes]);
+
+  // unpushed / unpulled counts shown on local branch pills
+  const tracks = useMemo(() => {
+    const out: Record<string, { ahead: number; behind: number }> = {};
+    for (const b of refs?.branches ?? []) {
+      const t = parseTrack(b.track);
+      if (t.ahead || t.behind) out[b.name] = t;
+    }
+    return out;
+  }, [refs?.branches]);
+
   const graph = useMemo(() => {
-    const list = [...commits];
+    const list = [...withStashes];
     if (status && status.files.length > 0) {
       list.unshift({
         hash: WIP_HASH,
@@ -358,7 +459,7 @@ export function App() {
       });
     }
     return computeGraph(list);
-  }, [commits, status, refs?.head]);
+  }, [withStashes, status, refs?.head]);
 
   const commitSet = useMemo(() => new Set(commits.map((c) => c.hash)), [commits]);
 
@@ -389,11 +490,29 @@ export function App() {
   const commitMenu = (e: React.MouseEvent, hash: string) => {
     e.preventDefault();
     if (hash === WIP_HASH) return;
+    const stash = stashByHash.get(hash);
+    if (stash) {
+      setMenu({ x: e.clientX, y: e.clientY, items: stashItems(stash.ref) });
+      return;
+    }
     const short = hash.slice(0, 7);
+    const sep: MenuItem = { label: '', onClick: () => {}, separator: true };
     const branchItems: MenuItem[] = branchesAt(hash).map((t) => ({ label: t.label, onClick: () => checkout(t.name, t.kind) }));
-    if (branchItems.length) branchItems.push({ label: '', onClick: () => {}, separator: true });
+    if (branchItems.length) branchItems.push(sep);
+    // Merge: every branch at this commit, or the commit itself when no branch points at it
+    const into = refs?.current;
+    const mergeTargets = mergeTargetsAt(hash);
+    const mergeItems: MenuItem[] = !into
+      ? []
+      : mergeTargets.length > 0
+        ? mergeTargets.map((name) => ({ label: `Merge ${name} into ${into}`, onClick: () => merge(name) }))
+        : hash === refs?.head
+          ? []
+          : [{ label: `Merge this commit into ${into}`, onClick: () => merge(hash) }];
+    if (mergeItems.length) mergeItems.push(sep);
     const items: MenuItem[] = [
       ...branchItems,
+      ...mergeItems,
       { label: 'Checkout this commit (detached HEAD)', onClick: () => checkout(hash, 'commit') },
       { label: 'Create branch here…', onClick: () => askBranch(hash) },
       {
@@ -447,7 +566,7 @@ export function App() {
       const isCurrent = refs?.current === item.name;
       items.push(
         { label: 'Checkout', disabled: isCurrent, onClick: () => checkout(item.name, 'local') },
-        { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: isCurrent || !refs?.current, onClick: () => void act('Merging', () => git('merge', { ref: item.name }), { ok: `Merged ${item.name}`, undo: { label: `Merge ${item.name}` } }) },
+        { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: isCurrent || !refs?.current, onClick: () => merge(item.name) },
         { label: 'Create branch here…', onClick: () => askBranch(item.name) },
         {
           label: 'Delete branch',
@@ -463,20 +582,10 @@ export function App() {
     } else if (item.kind === 'remote') {
       items.push(
         { label: 'Checkout (track)', onClick: () => checkout(item.name, 'remote') },
-        { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: !refs?.current, onClick: () => void act('Merging', () => git('merge', { ref: item.name }), { ok: `Merged ${item.name}`, undo: { label: `Merge ${item.name}` } }) },
+        { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: !refs?.current, onClick: () => merge(item.name) },
       );
     } else if (item.kind === 'stash') {
-      items.push(
-        { label: 'Pop stash', onClick: () => void act('Popping stash', () => git('stashPop', { ref: item.ref }), { ok: 'Stash applied and dropped' }) },
-        { label: 'Apply stash', onClick: () => void act('Applying stash', () => git('stashApply', { ref: item.ref }), { ok: 'Stash applied' }) },
-        {
-          label: 'Drop stash',
-          danger: true,
-          onClick: () => {
-            if (window.confirm('Drop this stash? This cannot be undone.')) void act('Dropping stash', () => git('stashDrop', { ref: item.ref }));
-          },
-        },
-      );
+      items.push(...stashItems(item.ref));
     } else {
       items.push({ label: 'Checkout', onClick: () => checkout(item.name, 'commit') });
     }
@@ -485,8 +594,10 @@ export function App() {
   };
 
   const onSidebarFocus = (item: SidebarItem) => {
-    if (item.kind === 'stash') setSel({ kind: 'stash', hash: item.hash });
-    else if (commitSet.has(item.hash)) jumpTo(item.hash);
+    if (item.kind === 'stash') {
+      setSel({ kind: 'stash', hash: item.hash });
+      focusHash(item.hash);
+    } else if (commitSet.has(item.hash)) jumpTo(item.hash);
   };
   const onSidebarActivate = (item: SidebarItem) => {
     if (item.kind === 'branch') checkout(item.name, 'local');
@@ -500,7 +611,7 @@ export function App() {
     if (window.confirm(msg)) void act('Discarding', () => git('discard', { files: [f.path], untracked: f.untracked }), { log: false });
   };
 
-  const selectedHash = sel?.kind === 'wip' ? WIP_HASH : sel?.kind === 'commit' ? sel.hash : null;
+  const selectedHash = sel?.kind === 'wip' ? WIP_HASH : sel ? sel.hash : null;
   const branchName = status?.branch ?? refs?.current ?? null;
   const detachedAt = repo && refs && refs.current === null ? refs.head : null;
 
@@ -584,7 +695,8 @@ export function App() {
                 hasMore={commits.length >= limit}
                 refsW={refsW}
                 onRefsW={setRefsW}
-                onSelect={(hash) => setSel(hash === WIP_HASH ? { kind: 'wip' } : { kind: 'commit', hash })}
+                tracks={tracks}
+                onSelect={(hash) => setSel(hash === WIP_HASH ? { kind: 'wip' } : stashByHash.has(hash) ? { kind: 'stash', hash } : { kind: 'commit', hash })}
                 onContext={(e, hash) => commitMenu(e, hash)}
                 onActivate={activateCommit}
                 onNearEnd={() => setLimit((l) => (commits.length >= l ? l + PAGE : l))}
@@ -606,6 +718,7 @@ export function App() {
                 files={status.files}
                 branch={branchName}
                 busy={busy !== null}
+                active={diff}
                 onOpen={setDiff}
                 onStage={(paths) => void act('Staging', () => git('stage', { files: paths }), { log: false })}
                 onUnstage={(paths) => void act('Unstaging', () => git('unstage', { files: paths }), { log: false })}
@@ -620,7 +733,7 @@ export function App() {
                 }
               />
             ) : sel && sel.kind !== 'wip' ? (
-              <CommitPanel key={sel.hash} repo={repo.root} hash={sel.hash} onOpen={setDiff} onError={notifyError} />
+              <CommitPanel key={sel.hash} repo={repo.root} hash={sel.hash} active={diff} onOpen={setDiff} onError={notifyError} />
             ) : (
               <div className="rp-empty">Select a commit to see its details</div>
             )}
@@ -658,6 +771,7 @@ export function App() {
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {prompt && <PromptDialog spec={prompt} onClose={() => setPrompt(null)} />}
+      {confirm && <ConfirmDialog spec={confirm} onClose={() => setConfirm(null)} />}
     </div>
   );
 }

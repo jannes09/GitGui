@@ -55,6 +55,49 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
   );
 }
 
+export interface ConfirmSpec {
+  title: string;
+  message: string;
+  confirm: string;
+  onConfirm: () => void;
+}
+
+export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: () => void }) {
+  const confirmBtn = useRef<HTMLButtonElement>(null);
+  useEffect(() => confirmBtn.current?.focus(), []);
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={spec.title}
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.key === 'Escape' && onClose()}
+      >
+        <h3>{spec.title}</h3>
+        <p className="modal-text">{spec.message}</p>
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            ref={confirmBtn}
+            className="btn primary"
+            onClick={() => {
+              onClose();
+              spec.onConfirm();
+            }}
+          >
+            {spec.confirm}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export interface PromptSpec {
   title: string;
   label: string;

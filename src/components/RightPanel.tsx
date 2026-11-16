@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { call } from '../api';
 import { Icon } from '../icons';
 import type { CommitDetail, CommitFile, DiffTarget, StatusFile } from '../types';
@@ -20,18 +20,59 @@ function FileName({ path }: { path: string }) {
   );
 }
 
+function sameTarget(a: DiffTarget, b: DiffTarget): boolean {
+  return a.path === b.path && !!a.staged === !!b.staged && a.hash === b.hash;
+}
+
+/**
+ * Up/Down arrows move through the listed files and open each one's diff.
+ * Listens on the window so it works wherever focus is, except in text fields,
+ * menus and dialogs.
+ */
+function useFileNav(targets: DiffTarget[], active: DiffTarget | null, open: (t: DiffTarget) => void) {
+  const latest = useRef({ targets, active, open });
+  latest.current = { targets, active, open };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('input, textarea, select, [contenteditable="true"], .ctx-menu, .modal')) return;
+      const { targets: list, active: current, open: openFile } = latest.current;
+      if (list.length === 0) return;
+      e.preventDefault();
+      const dir = e.key === 'ArrowDown' ? 1 : -1;
+      const at = current ? list.findIndex((t) => sameTarget(t, current)) : -1;
+      const next = at < 0 ? (dir === 1 ? 0 : list.length - 1) : Math.min(list.length - 1, Math.max(0, at + dir));
+      if (next !== at) openFile(list[next]);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // keep the active row visible while arrowing through a long list
+  useEffect(() => {
+    document.querySelector('.f-row.active')?.scrollIntoView({ block: 'nearest' });
+  }, [active]);
+}
+
 /* ---------- selected commit ---------- */
 
 interface CommitPanelProps {
   repo: string;
   hash: string;
+  active: DiffTarget | null;
   onOpen: (t: DiffTarget) => void;
   onError: (msg: string) => void;
 }
 
-export function CommitPanel({ repo, hash, onOpen, onError }: CommitPanelProps) {
+export function CommitPanel({ repo, hash, active, onOpen, onError }: CommitPanelProps) {
   const [detail, setDetail] = useState<CommitDetail | null>(null);
   const [files, setFiles] = useState<CommitFile[]>([]);
+
+  const targets = useMemo(() => files.map((f): DiffTarget => ({ path: f.path, hash })), [files, hash]);
+  useFileNav(targets, active, onOpen);
 
   useEffect(() => {
     let live = true;
@@ -78,7 +119,11 @@ export function CommitPanel({ repo, hash, onOpen, onError }: CommitPanelProps) {
           <span>{files.length} changed file{files.length === 1 ? '' : 's'}</span>
         </div>
         {files.map((f) => (
-          <div key={f.path} className="f-row" onClick={() => onOpen({ path: f.path, hash })}>
+          <div
+            key={f.path}
+            className={'f-row' + (active && sameTarget(active, { path: f.path, hash }) ? ' active' : '')}
+            onClick={() => onOpen({ path: f.path, hash })}
+          >
             <Badge code={f.status} />
             <FileName path={f.path} />
           </div>
@@ -94,6 +139,7 @@ interface StagingProps {
   files: StatusFile[];
   branch: string | null;
   busy: boolean;
+  active: DiffTarget | null;
   onOpen: (t: DiffTarget) => void;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
@@ -110,6 +156,17 @@ export function StagingPanel(p: StagingProps) {
 
   const staged = useMemo(() => p.files.filter((f) => f.index !== '.' && f.index !== '?' && !f.conflicted), [p.files]);
   const unstaged = useMemo(() => p.files.filter((f) => f.worktree !== '.' || f.conflicted), [p.files]);
+
+  // arrow-key order matches what is on screen: unstaged files first, then staged
+  const targets = useMemo(
+    () => [
+      ...unstaged.map((f): DiffTarget => ({ path: f.path, untracked: f.untracked })),
+      ...staged.map((f): DiffTarget => ({ path: f.path, staged: true })),
+    ],
+    [unstaged, staged],
+  );
+  useFileNav(targets, p.active, p.onOpen);
+  const isActive = (t: DiffTarget) => !!p.active && sameTarget(p.active, t);
 
   const message = description.trim() ? `${summary.trim()}\n\n${description.trim()}` : summary.trim();
   const canCommit = !p.busy && (staged.length > 0 || amend) && (summary.trim().length > 0 || amend);
@@ -137,7 +194,7 @@ export function StagingPanel(p: StagingProps) {
         {unstaged.map((f) => (
           <div
             key={'u' + f.path}
-            className="f-row"
+            className={'f-row' + (isActive({ path: f.path }) ? ' active' : '')}
             onClick={() => p.onOpen({ path: f.path, untracked: f.untracked })}
           >
             <Badge code={f.worktree} />
@@ -163,7 +220,11 @@ export function StagingPanel(p: StagingProps) {
         </div>
         {staged.length === 0 && <div className="rp-none">Nothing staged</div>}
         {staged.map((f) => (
-          <div key={'s' + f.path} className="f-row" onClick={() => p.onOpen({ path: f.path, staged: true })}>
+          <div
+            key={'s' + f.path}
+            className={'f-row' + (isActive({ path: f.path, staged: true }) ? ' active' : '')}
+            onClick={() => p.onOpen({ path: f.path, staged: true })}
+          >
             <Badge code={f.index} />
             <FileName path={f.path} />
             <span className="f-actions">

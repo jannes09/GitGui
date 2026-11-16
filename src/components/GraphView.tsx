@@ -13,6 +13,7 @@ interface Props {
   hasMore: boolean;
   refsW: number;
   onRefsW: (w: number) => void;
+  tracks: Record<string, { ahead: number; behind: number }>;
   onSelect: (hash: string) => void;
   onContext: (e: React.MouseEvent, hash: string) => void;
   onActivate: (e: React.MouseEvent, hash: string) => void;
@@ -47,12 +48,13 @@ interface RowProps {
   remotes: string[];
   selected: boolean;
   match: boolean;
+  tracks: Record<string, { ahead: number; behind: number }>;
   onSelect: (hash: string) => void;
   onContext: (e: React.MouseEvent, hash: string) => void;
   onActivate: (e: React.MouseEvent, hash: string) => void;
 }
 
-const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSelect, onContext, onActivate }: RowProps) {
+const Row = memo(function Row({ row, top, graphW, remotes, selected, match, tracks, onSelect, onContext, onActivate }: RowProps) {
   const c = row.commit;
   const color = LANE_COLORS[row.color];
   const labels = useMemo(() => parseRefs(c.refsRaw, remotes), [c.refsRaw, remotes]);
@@ -61,7 +63,7 @@ const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSe
 
   return (
     <div
-      className={'g-row' + (selected ? ' selected' : '') + (match ? ' match' : '') + (row.wip ? ' wip' : '')}
+      className={'g-row' + (selected ? ' selected' : '') + (match ? ' match' : '') + (row.wip ? ' wip' : '') + (row.stash ? ' stash' : '')}
       style={{ top, height: ROW_H }}
       onClick={() => onSelect(c.hash)}
       onDoubleClick={(e) => onActivate(e, c.hash)}
@@ -73,32 +75,62 @@ const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSe
             WIP
           </span>
         )}
-        {labels.slice(0, 3).map((l) => (
-          <span
-            key={l.kind + l.name}
-            className={'pill' + (l.current ? ' current' : '')}
-            style={
-              l.current
-                ? { background: color, borderColor: color }
-                : { background: color + '26', borderColor: color + '88' }
-            }
-            title={l.name}
-          >
-            {l.kind === 'tag' && <Icon name="tag" size={11} />}
-            <span className="pill-text">{l.name}</span>
-            {l.kind === 'branch' && l.local && <Icon name="monitor" size={11} />}
-            {(l.kind === 'remote' || l.remote) && <Icon name="cloud" size={11} />}
+        {c.stashRef && (
+          <span className="pill stash-pill" style={{ borderColor: color, color }} title={c.stashRef}>
+            <Icon name="stash" size={11} />
+            <span className="pill-text">stash</span>
           </span>
-        ))}
+        )}
+        {labels.slice(0, 3).map((l) => {
+          const t = l.kind === 'branch' && l.local ? tracks[l.name] : undefined;
+          const ahead = t?.ahead ?? 0;
+          const behind = t?.behind ?? 0;
+          return (
+            <span
+              key={l.kind + l.name}
+              className={'pill' + (l.current ? ' current' : '')}
+              style={
+                l.current
+                  ? { background: color, borderColor: color }
+                  : { background: color + '26', borderColor: color + '88' }
+              }
+              title={
+                l.name +
+                (ahead ? `\n${ahead} commit${ahead === 1 ? '' : 's'} not pushed` : '') +
+                (behind ? `\n${behind} commit${behind === 1 ? '' : 's'} to pull` : '')
+              }
+            >
+              {l.kind === 'tag' && <Icon name="tag" size={11} />}
+              <span className="pill-text">{l.name}</span>
+              {behind > 0 && <span className="pill-ab">↓{behind}</span>}
+              {ahead > 0 && <span className="pill-ab">↑{ahead}</span>}
+              {l.kind === 'branch' && l.local && <Icon name="monitor" size={11} />}
+              {(l.kind === 'remote' || l.remote) && <Icon name="cloud" size={11} />}
+            </span>
+          );
+        })}
         {labels.length > 3 && <span className="pill more">+{labels.length - 3}</span>}
       </div>
       <div className="c-graph" style={{ width: graphW }}>
         <svg width={graphW} height={ROW_H} style={{ overflow: 'visible' }}>
           {row.segs.map((s, i) => (
-            <path key={i} d={segPath(s)} stroke={LANE_COLORS[s.color]} strokeWidth={2} fill="none" strokeDasharray={row.wip ? '3 3' : undefined} />
+            <path
+              key={i}
+              d={segPath(s)}
+              stroke={LANE_COLORS[s.color]}
+              strokeWidth={2}
+              fill="none"
+              // only the line leaving a WIP/stash node is dashed, never the other lanes passing through its row
+              strokeDasharray={(row.wip || row.stash) && s.y1 === 0.5 ? '3 3' : undefined}
+            />
           ))}
           {row.wip ? (
             <circle cx={cx} cy={cy} r={9} fill="var(--bg)" stroke={color} strokeWidth={2} strokeDasharray="3 3" />
+          ) : row.stash ? (
+            <>
+              <rect x={cx - 9} y={cy - 9} width={18} height={18} rx={4} fill="var(--bg-raised)" stroke={color} strokeWidth={2} strokeDasharray="4 2" />
+              <path d={`M${cx - 4} ${cy - 2}h8M${cx - 4} ${cy + 2}h8`} stroke={color} strokeWidth={1.6} strokeLinecap="round" />
+            </>
           ) : row.merge ? (
             <circle cx={cx} cy={cy} r={5} fill={color} stroke="var(--bg)" strokeWidth={2} />
           ) : (
@@ -114,13 +146,13 @@ const Row = memo(function Row({ row, top, graphW, remotes, selected, match, onSe
       <div className="c-msg" title={c.subject}>
         {row.wip ? <span className="wip-text">// WIP</span> : c.subject}
       </div>
-      <div className="c-author">{row.wip ? '' : c.author}</div>
+      <div className="c-author">{row.wip ? '' : c.stashRef ?? c.author}</div>
       <div className="c-date">{row.wip ? '' : relativeDate(c.date)}</div>
     </div>
   );
 });
 
-export function GraphView({ data, remotes, selected, matches, focus, hasMore, refsW, onRefsW, onSelect, onContext, onActivate, onNearEnd }: Props) {
+export function GraphView({ data, remotes, selected, matches, focus, hasMore, refsW, onRefsW, tracks, onSelect, onContext, onActivate, onNearEnd }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(600);
@@ -182,6 +214,7 @@ export function GraphView({ data, remotes, selected, matches, focus, hasMore, re
               remotes={remotes}
               selected={row.commit.hash === selected}
               match={matches.has(row.commit.hash)}
+              tracks={tracks}
               onSelect={onSelect}
               onContext={onContext}
               onActivate={onActivate}
