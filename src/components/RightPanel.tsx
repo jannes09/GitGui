@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { call } from '../api';
 import { Icon } from '../icons';
 import type { CommitDetail, CommitFile, DiffTarget, StatusFile } from '../types';
@@ -17,6 +17,38 @@ function FileName({ path }: { path: string }) {
       <span className="f-base">{basename(path)}</span>
       <span className="f-dir">{dirname(path)}</span>
     </span>
+  );
+}
+
+/** A commit's description, limited to a few lines until the user asks for all of it. */
+function CommitBody({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const ref = useRef<HTMLPreElement>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      if (!open) setOverflows(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure); // the panel can be resized, which changes the wrapping
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, open]);
+
+  return (
+    <div className="cd-body-wrap">
+      <pre ref={ref} className={'cd-body' + (open ? ' open' : overflows ? ' clipped' : '')}>
+        {text}
+      </pre>
+      {(overflows || open) && (
+        <button className="link-btn" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -98,7 +130,7 @@ export function CommitPanel({ repo, hash, active, onOpen, onError }: CommitPanel
     <div className="rp">
       <div className="rp-scroll">
         <div className="cd-subject">{subject}</div>
-        {body && <pre className="cd-body">{body}</pre>}
+        {body && <CommitBody text={body} />}
         <div className="cd-meta">
           <div className="avatar">{initials(detail.author)}</div>
           <div>

@@ -156,7 +156,8 @@ export function GraphView({ data, remotes, selected, matches, focus, hasMore, re
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(600);
-  const graphW = GRAPH_PAD * 2 + Math.max(0, Math.min(data.maxLanes, 24) - 1) * LANE_W;
+  // never narrower than the "GRAPH" column title, even for a single straight line of history
+  const graphW = Math.max(56, GRAPH_PAD * 2 + Math.max(0, Math.min(data.maxLanes, 24) - 1) * LANE_W);
 
   useLayoutEffect(() => {
     const el = scroller.current;
