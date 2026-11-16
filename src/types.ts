@@ -1,0 +1,81 @@
+export interface Commit {
+  hash: string;
+  parents: string[];
+  author: string;
+  email: string;
+  date: number; // unix seconds
+  refsRaw: string;
+  subject: string;
+}
+
+export interface LocalBranch {
+  name: string;
+  hash: string;
+  current: boolean;
+  upstream: string | null;
+  track: string;
+}
+export interface RemoteBranch {
+  name: string;
+  hash: string;
+  remote: string;
+}
+export interface TagRef {
+  name: string;
+  hash: string;
+}
+export interface Stash {
+  ref: string;
+  hash: string;
+  message: string;
+  date: number;
+}
+export interface RefsData {
+  head: string | null;
+  current: string | null;
+  remotes: string[];
+  branches: LocalBranch[];
+  remoteBranches: RemoteBranch[];
+  tags: TagRef[];
+  stashes: Stash[];
+}
+
+export interface StatusFile {
+  path: string;
+  index: string;
+  worktree: string;
+  orig?: string;
+  untracked?: boolean;
+  conflicted?: boolean;
+}
+export interface StatusData {
+  branch: string | null;
+  oid: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  files: StatusFile[];
+}
+
+export interface CommitFile {
+  status: string;
+  path: string;
+  orig?: string;
+}
+export interface CommitDetail {
+  hash: string;
+  parents: string[];
+  author: string;
+  email: string;
+  date: string;
+  message: string;
+}
+
+export type Selection = { kind: 'wip' } | { kind: 'commit'; hash: string } | { kind: 'stash'; hash: string } | null;
+
+export interface DiffTarget {
+  path: string;
+  staged?: boolean;
+  untracked?: boolean;
+  hash?: string;
+}

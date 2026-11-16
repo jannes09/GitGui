@@ -1,0 +1,102 @@
+import { useEffect, useRef, useState } from 'react';
+
+export interface MenuItem {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+  separator?: boolean;
+}
+
+export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: x, top: y });
+
+  useEffect(() => {
+    const el = ref.current;
+    if (el) {
+      setPos({
+        left: Math.min(x, window.innerWidth - el.offsetWidth - 8),
+        top: Math.min(y, window.innerHeight - el.offsetHeight - 8),
+      });
+    }
+    const close = () => onClose();
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('click', close);
+    window.addEventListener('blur', close);
+    window.addEventListener('keydown', key);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('blur', close);
+      window.removeEventListener('keydown', key);
+    };
+  }, [x, y, onClose]);
+
+  return (
+    <div className="ctx-menu" ref={ref} style={pos} onContextMenu={(e) => e.preventDefault()}>
+      {items.map((it, i) =>
+        it.separator ? (
+          <div key={i} className="ctx-sep" />
+        ) : (
+          <button
+            key={i}
+            className={'ctx-item' + (it.danger ? ' danger' : '')}
+            disabled={it.disabled}
+            onClick={() => {
+              onClose();
+              it.onClick();
+            }}
+          >
+            {it.label}
+          </button>
+        ),
+      )}
+    </div>
+  );
+}
+
+export interface PromptSpec {
+  title: string;
+  label: string;
+  value?: string;
+  placeholder?: string;
+  submit: string;
+  onSubmit: (value: string) => void;
+}
+
+export function PromptDialog({ spec, onClose }: { spec: PromptSpec; onClose: () => void }) {
+  const [value, setValue] = useState(spec.value ?? '');
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => input.current?.focus(), []);
+
+  const submit = () => {
+    if (!value.trim()) return;
+    onClose();
+    spec.onSubmit(value.trim());
+  };
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div
+        className="modal"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onClose();
+          if (e.key === 'Enter') submit();
+        }}
+      >
+        <h3>{spec.title}</h3>
+        <label>{spec.label}</label>
+        <input ref={input} value={value} placeholder={spec.placeholder} onChange={(e) => setValue(e.target.value)} />
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={!value.trim()} onClick={submit}>
+            {spec.submit}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
