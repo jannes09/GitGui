@@ -140,6 +140,8 @@ interface StagingProps {
   branch: string | null;
   busy: boolean;
   active: DiffTarget | null;
+  /** who commits will be made as, e.g. "Name <email>" */
+  author?: string;
   onOpen: (t: DiffTarget) => void;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
@@ -256,6 +258,11 @@ export function StagingPanel(p: StagingProps) {
           {amend ? 'Amend commit' : `Commit changes to ${staged.length} file${staged.length === 1 ? '' : 's'}`}
         </button>
         <div className="hint">{p.branch ? `on ${p.branch}` : 'detached HEAD'} · Ctrl+Enter to commit</div>
+        {p.author && (
+          <div className="hint author" title={`Commits will be made as ${p.author}`}>
+            committing as {p.author}
+          </div>
+        )}
       </div>
     </div>
   );

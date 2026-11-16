@@ -4,6 +4,7 @@ import { DetachedBanner } from './components/DetachedBanner';
 import { DiffView } from './components/DiffView';
 import { GraphView } from './components/GraphView';
 import { Splitter } from './components/Splitter';
+import { AccountsDialog } from './components/AccountsDialog';
 import { ConfirmDialog, ContextMenu, PromptDialog, type ConfirmSpec, type MenuItem, type PromptSpec } from './components/Overlays';
 import { CommitPanel, StagingPanel } from './components/RightPanel';
 import { Sidebar, type SidebarItem } from './components/Sidebar';
@@ -11,7 +12,19 @@ import { Toolbar } from './components/Toolbar';
 import { parseTrack } from './util';
 import { DEFAULT_REFS_W, WIP_HASH, computeGraph } from './graph';
 import { Icon } from './icons';
-import type { Commit, DiffTarget, RefsData, RepoSnapshot, Selection, StatusData, StatusFile, UndoOp } from './types';
+import type {
+  AccountProfile,
+  AccountsData,
+  ActiveAccount,
+  Commit,
+  DiffTarget,
+  RefsData,
+  RepoSnapshot,
+  Selection,
+  StatusData,
+  StatusFile,
+  UndoOp,
+} from './types';
 
 const LAST_REPO_KEY = 'gitgui.lastRepo';
 const RECENT_KEY = 'gitgui.recent';
@@ -71,6 +84,10 @@ export function App() {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [prompt, setPrompt] = useState<PromptSpec | null>(null);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
+  const [accounts, setAccounts] = useState<AccountsData | null>(null);
+  const [activeAcct, setActiveAcct] = useState<ActiveAccount | null>(null);
+  const [acctDialog, setAcctDialog] = useState(false);
+  const [acctBusy, setAcctBusy] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>(readRecent);
   const [undoStack, setUndoStack] = useState<UndoOp[]>([]);
   const [redoStack, setRedoStack] = useState<UndoOp[]>([]);
@@ -119,6 +136,23 @@ export function App() {
     }
   }, []);
 
+  const loadAccounts = useCallback(async () => {
+    try {
+      setAccounts(await call<AccountsData>('accountsList'));
+    } catch (e) {
+      notifyError((e as Error).message);
+    }
+  }, [notifyError]);
+
+  const loadActive = useCallback(async (root: string) => {
+    try {
+      const a = await call<ActiveAccount>('accountActive', { repo: root });
+      if (repoRef.current === root) setActiveAcct(a);
+    } catch {
+      /* the account button simply stays unset */
+    }
+  }, []);
+
   const openRepo = useCallback(
     async (path: string) => {
       try {
@@ -126,6 +160,8 @@ export function App() {
         repoRef.current = info.root;
         refsKey.current = '';
         setRepo(info);
+        setActiveAcct(null);
+        void loadActive(info.root);
         setRefs(null);
         setStatus(null);
         setCommits([]);
@@ -145,21 +181,27 @@ export function App() {
         notifyError((e as Error).message);
       }
     },
-    [reload, notifyError],
+    [reload, notifyError, loadActive],
   );
 
   useEffect(() => {
     const last = readStore(LAST_REPO_KEY);
     if (last) void openRepo(last);
+    void loadAccounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // pick up changes made outside the app whenever the window regains focus
   useEffect(() => {
-    const onFocus = () => repoRef.current && void reload(repoRef.current).catch(() => {});
+    const onFocus = () => {
+      const root = repoRef.current;
+      if (!root) return;
+      void reload(root).catch(() => {});
+      void loadActive(root);
+    };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [reload]);
+  }, [reload, loadActive]);
 
   // load more history when the user scrolls near the end
   useEffect(() => {
@@ -297,6 +339,147 @@ export function App() {
   }, [stepHistory]);
 
   const git = useCallback(<T,>(method: string, args: object = {}) => call<T>(method, { repo: repoRef.current, ...args }), []);
+
+  /* ---------- GitHub accounts ---------- */
+
+  const isSignedIn = (username: string) => !!accounts?.gcm.accounts.some((a) => a.toLowerCase() === username.toLowerCase());
+
+  const openAccounts = () => {
+    void loadAccounts();
+    setAcctDialog(true);
+  };
+
+  const signIn = async (username?: string): Promise<boolean> => {
+    const msg = `Waiting for GitHub sign-in${username ? ` for ${username}` : ''} in your browser…`;
+    setAcctBusy(msg);
+    setBusy('Signing in');
+    try {
+      await call('accountSignIn', { username });
+      await loadAccounts();
+      notify(username ? `Signed in as ${username}` : 'Signed in to GitHub');
+      return true;
+    } catch (e) {
+      notifyError((e as Error).message);
+      return false;
+    } finally {
+      setAcctBusy(null);
+      setBusy(null);
+    }
+  };
+
+  const signOut = async (username: string) => {
+    try {
+      await call('accountSignOut', { username });
+      await loadAccounts();
+      notify(`Signed out ${username}`);
+    } catch (e) {
+      notifyError((e as Error).message);
+    }
+  };
+
+  const saveAccount = async (profile: AccountProfile): Promise<string | null> => {
+    try {
+      await call('accountSave', { profile });
+      await loadAccounts();
+      if (repoRef.current) void loadActive(repoRef.current); // an edited account may be the active one
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+
+  const removeAccount = async (username: string) => {
+    if (!window.confirm(`Remove ${username} from this list?\n\nThis does not sign you out of GitHub or change any repository.`)) return;
+    try {
+      await call('accountRemove', { username });
+      await loadAccounts();
+    } catch (e) {
+      notifyError((e as Error).message);
+    }
+  };
+
+  // Points this repository (or every repository) at a saved account.
+  const switchAccount = async (username: string, scope: 'local' | 'global' = 'local') => {
+    const root = repoRef.current;
+    if (scope === 'local' && !root) return;
+    try {
+      const p = await call<AccountProfile>('accountSwitch', { repo: root, username, scope });
+      if (root) await loadActive(root);
+      notify(
+        scope === 'local'
+          ? `Using ${p.username} for this repository. Commits will be made as ${p.name}.`
+          : `${p.username} is now the default account for all repositories.`,
+      );
+      if (accounts?.gcm.available && !isSignedIn(p.username)) {
+        setConfirm({
+          title: `Sign in as ${p.username}?`,
+          message: `${p.username} is not signed in to GitHub on this computer yet, so pushing and pulling would fail.\n\nA browser window will open to sign in.`,
+          confirm: 'Sign in',
+          onConfirm: () => void signIn(p.username),
+        });
+      }
+    } catch (e) {
+      notifyError((e as Error).message);
+    }
+  };
+
+  // Like act(), for operations that talk to GitHub: when they fail because of sign-in or the wrong
+  // account, offer to sign in (and then retry) instead of showing a raw git error.
+  type ActOpts = Parameters<typeof act>[2];
+  const netAct = (label: string, fn: () => Promise<unknown>, opts: ActOpts = {}): void => {
+    void act(label, fn, {
+      ...opts,
+      onError: (msg) => {
+        if (!msg.startsWith('AUTH:')) return false;
+        const denied = /Permission to (\S+?)(?:\.git)? denied to (\S+?)\.?(?:\s|$)/i.exec(msg);
+        if (denied) {
+          setConfirm({
+            title: 'GitHub refused this account',
+            message: `${denied[2]} does not have access to ${denied[1]}.\n\nSwitch to an account that does, then try again.`,
+            confirm: 'Open accounts',
+            onConfirm: openAccounts,
+          });
+          return true;
+        }
+        const who = activeAcct?.username ?? undefined;
+        setConfirm({
+          title: who ? `Sign in as ${who}?` : 'Sign in to GitHub?',
+          message:
+            (who ? `${who} is not signed in to GitHub on this computer, so this could not be done.` : 'GitHub needs you to sign in before this can be done.') +
+            '\n\nA browser window will open to sign in, and the action will be retried afterwards.',
+          confirm: 'Sign in',
+          onConfirm: () => void signIn(who).then((ok) => ok && netAct(label, fn, opts)),
+        });
+        return true;
+      },
+    });
+  };
+
+  const accountMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation(); // the menu closes on any window click, including this one
+    void loadAccounts();
+    const r = e.currentTarget.getBoundingClientRect();
+    const sep: MenuItem = { label: '', onClick: () => {}, separator: true };
+    const profiles = accounts?.profiles ?? [];
+    const items: MenuItem[] = [{ label: `GitHub account for ${repo?.name ?? 'this repository'}`, disabled: true, onClick: () => {} }];
+    if (profiles.length === 0) items.push({ label: 'No accounts saved yet', disabled: true, onClick: () => {} });
+    for (const p of profiles) {
+      const on = !!activeAcct?.username && activeAcct.username.toLowerCase() === p.username.toLowerCase();
+      const status = !accounts?.gcm.available ? '' : isSignedIn(p.username) ? '  ● signed in' : '  ○ not signed in';
+      items.push({ label: `${on ? '✓' : ' '}  ${p.username}  ·  ${p.email}${status}`, onClick: () => void switchAccount(p.username) });
+    }
+    if (activeAcct && activeAcct.remotes.count > 0 && !activeAcct.remotes.githubHttps) {
+      items.push(sep, {
+        label: activeAcct.remotes.githubSsh
+          ? 'This remote uses SSH: only the commit identity changes'
+          : 'This remote is not GitHub over HTTPS: only the commit identity changes',
+        disabled: true,
+        onClick: () => {},
+      });
+    }
+    items.push(sep, { label: 'Add account…', onClick: openAccounts }, { label: 'Manage accounts…', onClick: openAccounts });
+    setMenu({ x: r.left, y: r.bottom + 4, items });
+  };
 
   const openDialog = useCallback(async () => {
     if (isElectron) {
@@ -635,13 +818,25 @@ export function App() {
         onQuery={setQuery}
         onSearchKey={onSearchKey}
         onOpen={() => void openDialog()}
-        onFetch={() => void act('Fetching', () => git('fetch'), { ok: 'Fetched all remotes' })}
+        account={
+          repo
+            ? {
+                username: activeAcct?.username ?? null,
+                signedIn: activeAcct?.username && accounts?.gcm.available ? isSignedIn(activeAcct.username) : undefined,
+                title: activeAcct?.username
+                  ? `Commits as ${activeAcct.name} <${activeAcct.email}>. Click to switch account.`
+                  : 'No GitHub account is chosen for this repository. Click to choose one.',
+              }
+            : null
+        }
+        onAccount={accountMenu}
+        onFetch={() => netAct('Fetching', () => git('fetch'), { ok: 'Fetched all remotes' })}
         undoLabel={undoStack.length ? undoStack[undoStack.length - 1].label : null}
         redoLabel={redoStack.length ? redoStack[redoStack.length - 1].label : null}
         onUndo={() => void stepHistory('undo')}
         onRedo={() => void stepHistory('redo')}
-        onPull={() => void act('Pulling', () => git('pull'), { ok: 'Pull complete', undo: { label: 'Pull' } })}
-        onPush={() => void act('Pushing', () => git('push'), { ok: 'Push complete' })}
+        onPull={() => netAct('Pulling', () => git('pull'), { ok: 'Pull complete', undo: { label: 'Pull' } })}
+        onPush={() => netAct('Pushing', () => git('push'), { ok: 'Push complete' })}
         onBranch={() => askBranch()}
         onStash={() => {
           if (!status?.files.length) return notify('Nothing to stash', true);
@@ -717,6 +912,7 @@ export function App() {
               <StagingPanel
                 files={status.files}
                 branch={branchName}
+                author={activeAcct?.name ? `${activeAcct.name} <${activeAcct.email}>` : undefined}
                 busy={busy !== null}
                 active={diff}
                 onOpen={setDiff}
@@ -771,6 +967,19 @@ export function App() {
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {prompt && <PromptDialog spec={prompt} onClose={() => setPrompt(null)} />}
+      {acctDialog && accounts && (
+        <AccountsDialog
+          data={accounts}
+          active={activeAcct}
+          busy={acctBusy}
+          onSave={saveAccount}
+          onRemove={(u) => void removeAccount(u)}
+          onUse={(u, scope) => void switchAccount(u, scope)}
+          onSignIn={(u) => void signIn(u)}
+          onSignOut={(u) => void signOut(u)}
+          onClose={() => setAcctDialog(false)}
+        />
+      )}
       {confirm && <ConfirmDialog spec={confirm} onClose={() => setConfirm(null)} />}
     </div>
   );

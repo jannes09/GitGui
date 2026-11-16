@@ -1,4 +1,5 @@
 import { Icon, type IconName } from '../icons';
+import { Avatar } from './Avatar';
 
 interface Props {
   repoName: string | null;
@@ -10,6 +11,9 @@ interface Props {
   matchInfo: string;
   onQuery: (q: string) => void;
   onSearchKey: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  /** the GitHub account this repository uses; null hides the button (no repository open) */
+  account: { username: string | null; title: string; signedIn?: boolean } | null;
+  onAccount: (e: React.MouseEvent<HTMLButtonElement>) => void;
   undoLabel: string | null;
   redoLabel: string | null;
   onUndo: () => void;
@@ -101,6 +105,16 @@ export function Toolbar(p: Props) {
 
       <div className="tb-right">
         {p.busy && <span className="tb-busy">{p.busy}…</span>}
+        {p.account && (
+          <button className={'tb-account' + (p.account.username ? '' : ' unset')} onClick={p.onAccount} title={p.account.title}>
+            <Avatar username={p.account.username} size={28} signedIn={p.account.signedIn} className="tb-avatar" />
+            <span className="tb-repo-text">
+              <small>github account</small>
+              <strong>{p.account.username ?? 'Not set'}</strong>
+            </span>
+            <Icon name="down" size={13} />
+          </button>
+        )}
         <div className="tb-search">
           <Icon name="search" size={14} />
           <input

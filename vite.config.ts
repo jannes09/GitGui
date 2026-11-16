@@ -49,7 +49,7 @@ function rpcPlugin(): Plugin {
 // Production builds run from file:// inside Electron, so lock the CSP down.
 function cspPlugin(): Plugin {
   const csp =
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'";
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://github.com https://avatars.githubusercontent.com; connect-src 'self'";
   return {
     name: 'csp',
     transformIndexHtml: {

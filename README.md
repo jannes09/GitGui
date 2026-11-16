@@ -42,6 +42,16 @@ branch pills show `↑` / `↓` for unpushed / unpulled commits, and a commit's 
 merge for every branch on it. Double-click a commit that has a branch label to check that branch out. If
 uncommitted changes block a checkout you are offered "Stash & checkout".
 
+**GitHub accounts:** the toolbar's account button (profile picture and username) switches which saved account the
+repository uses. A switch sets the repository's `user.name`, `user.email` and
+`credential.https://github.com.username`, so Git Credential Manager uses that account for fetch / pull / push, and a
+small dot shows whether it is signed in. "Manage accounts" adds, edits and removes accounts, signs in or out (via
+Git Credential Manager's browser flow) and can set a default for all repositories. If a fetch, pull or push fails
+because you are signed out or on the wrong account, the app offers to sign in and retries. Profile pictures are
+loaded from `github.com/<username>.png` (only the public username is sent) and fall back to initials. Account
+details (username, name, email — never passwords or tokens) are kept in `~/.gitgui/accounts.json`.
+Only github.com over HTTPS is affected; SSH remotes just get the commit identity.
+
 **Resizable panels:** drag the dividers beside the sidebar and the details panel, or the edge of the
 BRANCH / TAG column header. Double-click resets, arrow keys nudge, and widths are remembered.
 

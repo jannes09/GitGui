@@ -6,6 +6,7 @@
 
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const ENV = {
@@ -35,11 +36,19 @@ function run(repo, args, opts = {}) {
       const stdout = Buffer.concat(out).toString('utf8');
       const stderr = Buffer.concat(err).toString('utf8');
       if ((opts.okCodes || [0]).includes(code)) resolve(stdout);
-      else reject(new Error((stderr || stdout || `git exited with code ${code}`).trim()));
+      else reject(new Error(classifyError((stderr || stdout || `git exited with code ${code}`).trim())));
     });
     child.stdin.on('error', () => {});
     child.stdin.end(opts.input == null ? undefined : opts.input);
   });
+}
+
+// Failures that mean "you are not signed in, or signed in as the wrong GitHub account". The UI
+// recognises the AUTH: prefix and offers to sign in instead of showing a raw git error.
+const AUTH_RE =
+  /Cannot prompt because user interactivity has been disabled|could not read (Username|Password) for|terminal prompts disabled|Authentication failed|Invalid username or (token|password)|Permission to .+ denied to|The requested URL returned error: 40[13]/i;
+function classifyError(message) {
+  return AUTH_RE.test(message) ? `AUTH: ${message}` : message;
 }
 
 function assertRepo(repo) {
@@ -98,6 +107,89 @@ function validateState(s) {
 async function hasHead(repo) {
   const out = await run(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [0, 1] });
   return out.trim().length > 0;
+}
+
+// ---- GitHub accounts ----------------------------------------------------
+// A profile is { username, name, email }. No passwords or tokens are ever stored here:
+// Git Credential Manager (GCM) holds the sign-ins. Switching an account sets the repository's
+// commit identity and tells GCM which GitHub account to use for this repository.
+
+const USERNAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+const GITHUB_ACCOUNT_KEY = 'credential.https://github.com.username';
+
+function accountsFile() {
+  return path.join(process.env.GITGUI_HOME || path.join(os.homedir(), '.gitgui'), 'accounts.json');
+}
+
+function cleanProfile(p) {
+  if (!p || typeof p !== 'object') throw new Error('Invalid account');
+  const username = typeof p.username === 'string' ? p.username.trim() : '';
+  const name = typeof p.name === 'string' ? p.name.trim() : '';
+  const email = typeof p.email === 'string' ? p.email.trim() : '';
+  if (!USERNAME_RE.test(username)) throw new Error('GitHub usernames are letters, numbers and hyphens, and cannot start with a hyphen');
+  if (!name || name.length > 100 || /[\r\n\0<>]/.test(name) || name.startsWith('-')) throw new Error('Enter the name to use on commits');
+  if (!EMAIL_RE.test(email) || email.length > 200 || email.startsWith('-')) throw new Error('Enter a valid email address for commits');
+  return { username, name, email };
+}
+
+function readProfiles() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(accountsFile(), 'utf8'));
+    const out = [];
+    for (const p of Array.isArray(raw) ? raw : []) {
+      try {
+        out.push(cleanProfile(p));
+      } catch {
+        /* skip a hand-edited entry that is no longer valid */
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function writeProfiles(list) {
+  const file = accountsFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(list, null, 2) + '\n', 'utf8');
+  fs.renameSync(tmp, file);
+}
+
+const sameUser = (a, b) => a.toLowerCase() === b.toLowerCase();
+
+// Runs `git credential-manager github ...`. Never rejects: callers inspect the exit code.
+function gcm(args, { interactive = false, timeoutMs = 20000 } = {}) {
+  return new Promise((resolve) => {
+    const env = { ...ENV };
+    if (interactive) delete env.GIT_TERMINAL_PROMPT; // a browser sign-in is not a terminal prompt
+    const child = spawn('git', ['credential-manager', ...args], { env, windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    child.stdout.on('data', (d) => (stdout += d));
+    child.stderr.on('data', (d) => (stderr += d));
+    child.stdin.on('error', () => {});
+    child.stdin.end();
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout, stderr: String(e.message) });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? -1, stdout: stdout.trim(), stderr: stderr.trim() });
+    });
+  });
+}
+
+async function gcmStatus() {
+  const v = await gcm(['--version'], { timeoutMs: 10000 });
+  if (v.code !== 0) return { available: false, version: null, accounts: [] };
+  const l = await gcm(['github', 'list']);
+  const accounts = l.code === 0 ? l.stdout.split(/\r?\n/).map((s) => s.trim()).filter((s) => USERNAME_RE.test(s)) : [];
+  return { available: true, version: v.stdout.split('+')[0], accounts };
 }
 
 const handlers = {
@@ -367,6 +459,91 @@ const handlers = {
     assertRepo(repo);
     if (!['soft', 'mixed', 'hard'].includes(mode)) throw new Error('Invalid reset mode');
     await run(repo, ['reset', `--${mode}`, safeRef(hash)]);
+  },
+
+  async accountsList() {
+    const cfg = (key) => run(os.homedir(), ['config', '--global', '--get', key], { okCodes: [0, 1], literal: false }).catch(() => '');
+    const [gcmInfo, name, email] = await Promise.all([gcmStatus(), cfg('user.name'), cfg('user.email')]);
+    // the existing global identity is offered as a starting point when adding the first account
+    return { profiles: readProfiles(), gcm: gcmInfo, suggestion: { name: name.trim(), email: email.trim() } };
+  },
+
+  async accountSave({ profile }) {
+    const p = cleanProfile(profile);
+    const list = readProfiles();
+    const i = list.findIndex((x) => sameUser(x.username, p.username));
+    if (i >= 0) list[i] = p;
+    else list.push(p);
+    writeProfiles(list);
+    return list;
+  },
+
+  async accountRemove({ username }) {
+    if (typeof username !== 'string') throw new Error('Invalid account');
+    const list = readProfiles().filter((x) => !sameUser(x.username, username));
+    writeProfiles(list);
+    return list;
+  },
+
+  // Which account this repository uses, and whether switching can affect its remotes.
+  async accountActive({ repo }) {
+    assertRepo(repo);
+    const get = async (flag, key) => (await run(repo, ['config', flag, '--get', key], { okCodes: [0, 1], literal: false })).trim();
+    const local = await get('--local', GITHUB_ACCOUNT_KEY);
+    const global = local ? '' : await get('--global', GITHUB_ACCOUNT_KEY);
+    const [name, email, remotes] = await Promise.all([
+      run(repo, ['config', '--get', 'user.name'], { okCodes: [0, 1], literal: false }),
+      run(repo, ['config', '--get', 'user.email'], { okCodes: [0, 1], literal: false }),
+      run(repo, ['remote', '-v']).catch(() => ''),
+    ]);
+    const urls = [...new Set(remotes.split('\n').map((l) => l.split(/\s+/)[1]).filter(Boolean))];
+    return {
+      username: local || global || null,
+      scope: local ? 'local' : global ? 'global' : null,
+      name: name.trim(),
+      email: email.trim(),
+      remotes: {
+        count: urls.length,
+        githubHttps: urls.some((u) => /^https:\/\/([^@/]+@)?github\.com\//i.test(u)),
+        githubSsh: urls.some((u) => /^(git@github\.com:|ssh:\/\/git@github\.com)/i.test(u)),
+      },
+    };
+  },
+
+  async accountSwitch({ repo, username, scope = 'local' }) {
+    if (scope !== 'local' && scope !== 'global') throw new Error('Invalid scope');
+    if (typeof username !== 'string') throw new Error('Invalid account');
+    const profile = readProfiles().find((x) => sameUser(x.username, username));
+    if (!profile) throw new Error(`"${username}" is not a saved account`);
+    let dir = os.homedir();
+    if (scope === 'local') dir = assertRepo(repo);
+    const set = (key, value) => run(dir, ['config', `--${scope}`, key, value], { literal: false });
+    await set('user.name', profile.name);
+    await set('user.email', profile.email);
+    await set(GITHUB_ACCOUNT_KEY, profile.username);
+    return profile;
+  },
+
+  // Opens Git Credential Manager's browser sign-in. Can take minutes, so it waits up to 5.
+  async accountSignIn({ username, force }) {
+    const args = ['github', 'login', '--browser'];
+    if (username) {
+      if (typeof username !== 'string' || !USERNAME_RE.test(username)) throw new Error('Invalid GitHub username');
+      args.push('--username', username);
+    }
+    if (force) args.push('--force');
+    const status = await gcmStatus();
+    if (!status.available) throw new Error('Git Credential Manager is not installed, so the app cannot sign in for you. Sign in from a terminal with git.');
+    const r = await gcm(args, { interactive: true, timeoutMs: 300000 });
+    if (r.code !== 0) throw new Error(r.stderr || 'Sign-in was cancelled or did not finish');
+    return gcmStatus();
+  },
+
+  async accountSignOut({ username }) {
+    if (typeof username !== 'string' || !USERNAME_RE.test(username)) throw new Error('Invalid GitHub username');
+    const r = await gcm(['github', 'logout', username]);
+    if (r.code !== 0) throw new Error(r.stderr || 'Could not sign out');
+    return gcmStatus();
   },
 
   async snapshot({ repo }) {

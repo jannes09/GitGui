@@ -75,6 +75,31 @@ export interface CommitDetail {
   message: string;
 }
 
+export interface AccountProfile {
+  username: string;
+  name: string;
+  email: string;
+}
+export interface GcmStatus {
+  available: boolean;
+  version: string | null;
+  /** GitHub accounts Git Credential Manager is currently signed in to */
+  accounts: string[];
+}
+export interface AccountsData {
+  profiles: AccountProfile[];
+  gcm: GcmStatus;
+  /** the global git identity, offered when adding a first account */
+  suggestion: { name: string; email: string };
+}
+export interface ActiveAccount {
+  username: string | null;
+  scope: 'local' | 'global' | null;
+  name: string;
+  email: string;
+  remotes: { count: number; githubHttps: boolean; githubSsh: boolean };
+}
+
 export interface RepoSnapshot {
   head: { branch: string | null; hash: string | null };
   branches: Record<string, string>;
