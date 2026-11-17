@@ -12,7 +12,10 @@
     "start": "electron .",
     "smoke": "node scripts/dev.mjs --smoke",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "dist": "npm run build && electron-builder --win portable",
+    "dist:installer": "npm run build && electron-builder --win nsis",
+    "icon": "electron scripts/make-icon.cjs"
   },
   "dependencies": {
     "react": "^19.3.1",
@@ -23,7 +26,34 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
     "electron": "^45.3.3",
+    "electron-builder": "^26.18.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"
+  },
+  "build": {
+    "appId": "com.gitgui.app",
+    "productName": "GitGui",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "GitGui-${version}-${arch}.${ext}",
+      "signExecutable": false,
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "GitGui-Setup-${version}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

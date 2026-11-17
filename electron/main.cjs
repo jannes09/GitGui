@@ -15,8 +15,10 @@ function createWindow() {
     height: 900,
     minWidth: 960,
     minHeight: 560,
+    show: false, // shown once maximised, so the window never flashes at its normal size first
     backgroundColor: '#16181d',
     title: 'GitGui',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'), // window / taskbar icon (the exe gets its own from build/icon.ico)
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#12141a', symbolColor: '#cfd3dc', height: 36 },
     webPreferences: {
@@ -26,6 +28,14 @@ function createWindow() {
       sandbox: true,
     },
   });
+
+  // Always start maximised (the width and height above are only what "restore down" returns to).
+  win.maximize();
+  const reveal = () => {
+    if (!win.isDestroyed() && !win.isVisible()) win.show();
+  };
+  win.once('ready-to-show', reveal);
+  setTimeout(reveal, 5000); // never leave the window hidden if the page is slow to paint
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
@@ -42,7 +52,7 @@ function createWindow() {
     // `npm run smoke`: prove the window loads and the preload bridge exists, then quit.
     win.webContents.on('did-finish-load', async () => {
       const bridge = await win.webContents.executeJavaScript('typeof window.gitApi?.call');
-      console.log(`SMOKE_RESULT bridge=${bridge}`);
+      console.log(`SMOKE_RESULT bridge=${bridge} maximized=${win.isMaximized()}`);
       setTimeout(() => app.quit(), 500);
     });
     win.webContents.on('did-fail-load', (_e, code, desc) => {
