@@ -516,6 +516,15 @@ const handlers = {
     assertRepo(repo);
     await run(repo, ['branch', force ? '-D' : '-d', safeRef(name)]);
   },
+  // Deletes a branch on the remote itself (git push --delete); the remote-tracking ref disappears with it.
+  async deleteRemoteBranch({ repo, remote, branch }) {
+    assertRepo(repo);
+    safeRef(remote);
+    safeRef(branch);
+    const remotes = (await run(repo, ['remote'])).split('\n').filter(Boolean);
+    if (!remotes.includes(remote)) throw new Error(`"${remote}" is not a remote of this repository`);
+    await run(repo, ['push', remote, '--delete', branch]);
+  },
   async createTag({ repo, name, hash }) {
     assertRepo(repo);
     safeRef(name);

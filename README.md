@@ -57,6 +57,10 @@ Only github.com over HTTPS is affected; SSH remotes just get the commit identity
 **Resizable panels:** drag the dividers beside the sidebar and the details panel, or the edge of the
 BRANCH / TAG column header. Double-click resets, arrow keys nudge, and widths are remembered.
 
+**Deleting branches:** right-click a commit (or a branch in the sidebar) to delete a local branch, its copy on the
+remote (`git push --delete`), or both. Deleting the local copy is undoable and git refuses it, with an
+"Delete anyway" prompt, if it has unmerged commits; remote deletion always asks first and cannot be undone.
+
 **Repository tabs:** every opened repository gets a tab above the toolbar. Click to switch, drag to reorder,
 middle-click or the × to close, right-click for more, `+` to open another. Double-click a tab (or press F2, or
 right-click → Rename) to give it an alias; the folder is not renamed and "Reset tab name" brings the original back. Each tab keeps its own undo history and

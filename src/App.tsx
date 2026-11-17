@@ -736,6 +736,94 @@ export function App() {
     });
   };
 
+  /* ---------- deleting branches ---------- */
+
+  // The remote-tracking branch that belongs to a local branch, and the other way round.
+  const remoteOf = (local: string): string | null => {
+    const names = new Set((refs?.remoteBranches ?? []).map((r) => r.name));
+    const upstream = refs?.branches.find((b) => b.name === local)?.upstream;
+    if (upstream && names.has(upstream)) return upstream;
+    return (refs?.remotes ?? []).map((r) => `${r}/${local}`).find((n) => names.has(n)) ?? null;
+  };
+  const localOf = (remote: string): string | null => refs?.branches.find((b) => remoteOf(b.name) === remote)?.name ?? null;
+
+  const removeRemote = (full: string) => {
+    const remote = (refs?.remotes ?? []).find((r) => full.startsWith(r + '/'));
+    if (!remote) return notifyError(`Cannot tell which remote ${full} belongs to.`);
+    netAct('Deleting on the remote', () => git('deleteRemoteBranch', { remote, branch: full.slice(remote.length + 1) }), {
+      ok: `Deleted ${full} on the remote`,
+    });
+  };
+
+  // Local first: git refuses it when commits would be lost, and then nothing has been deleted anywhere.
+  const removeLocal = (name: string, alsoRemote: string | null, force = false) => {
+    void act('Deleting', () => git('deleteBranch', { name, force }), {
+      ok: `Deleted ${name}`,
+      undo: { label: `Delete branch ${name}` },
+      onError: (msg) => {
+        if (!/not fully merged/i.test(msg)) return false;
+        setConfirm({
+          title: `${name} has unmerged commits`,
+          message: `Some commits on "${name}" are not on any other branch. Deleting it makes them hard to find again.\n\nDelete it anyway?`,
+          confirm: 'Delete anyway',
+          onConfirm: () => removeLocal(name, alsoRemote, true),
+        });
+        return true;
+      },
+    }).then((ok) => {
+      if (ok && alsoRemote) removeRemote(alsoRemote);
+    });
+  };
+
+  // Delete options for a branch: the local copy, the copy on the remote, or both.
+  const deleteItems = (localIn: string | null, remoteIn: string | null): MenuItem[] => {
+    const local = localIn ?? (remoteIn ? localOf(remoteIn) : null);
+    const remote = remoteIn ?? (localIn ? remoteOf(localIn) : null);
+    const canLocal = !!local && refs?.current !== local; // the checked-out branch cannot be deleted
+    const gone = 'It cannot be undone from here.';
+    const items: MenuItem[] = [];
+    if (local && canLocal) {
+      items.push({
+        label: remote ? `Delete ${local} (local only)…` : `Delete branch ${local}…`,
+        danger: true,
+        onClick: () =>
+          setConfirm({
+            title: `Delete ${local}?`,
+            message: `Deletes the local branch. ${remote ? `The copy on ${remote} stays.\n\n` : ''}You can undo this with Ctrl+Z.`,
+            confirm: 'Delete',
+            onConfirm: () => removeLocal(local, null),
+          }),
+      });
+    }
+    if (remote) {
+      items.push({
+        label: `Delete ${remote} (on the remote)…`,
+        danger: true,
+        onClick: () =>
+          setConfirm({
+            title: `Delete ${remote} on the remote?`,
+            message: `Removes the branch from the remote for everyone who uses it. ${local ? `Your local branch "${local}" stays.\n\n` : ''}${gone}`,
+            confirm: 'Delete on remote',
+            onConfirm: () => removeRemote(remote),
+          }),
+      });
+    }
+    if (local && canLocal && remote) {
+      items.push({
+        label: `Delete ${local} and ${remote} (both)…`,
+        danger: true,
+        onClick: () =>
+          setConfirm({
+            title: `Delete ${local} everywhere?`,
+            message: `Deletes the local branch, then removes it from the remote for everyone who uses it. The remote part cannot be undone from here.`,
+            confirm: 'Delete both',
+            onConfirm: () => removeLocal(local, remote),
+          }),
+      });
+    }
+    return items;
+  };
+
   const stashItems = (ref: string): MenuItem[] => [
     {
       label: 'Pop stash',
@@ -862,9 +950,23 @@ export function App() {
           ? []
           : [{ label: `Merge this commit into ${into}`, onClick: () => merge(hash) }];
     if (mergeItems.length) mergeItems.push(sep);
+    // Delete: every branch on this commit, local and remote, each paired with its counterpart
+    const deleteMenu: MenuItem[] = [];
+    const paired = new Set<string>();
+    for (const b of refs?.branches ?? []) {
+      if (b.hash !== hash) continue;
+      deleteMenu.push(...deleteItems(b.name, null));
+      const r = remoteOf(b.name);
+      if (r) paired.add(r);
+    }
+    for (const r of refs?.remoteBranches ?? []) {
+      if (r.hash === hash && !paired.has(r.name)) deleteMenu.push(...deleteItems(null, r.name));
+    }
+    if (deleteMenu.length) deleteMenu.push(sep);
     const items: MenuItem[] = [
       ...branchItems,
       ...mergeItems,
+      ...deleteMenu,
       { label: 'Checkout this commit (detached HEAD)', onClick: () => checkout(hash, 'commit') },
       { label: 'Create branch here…', onClick: () => askBranch(hash) },
       {
@@ -928,21 +1030,13 @@ export function App() {
         { label: 'Checkout', disabled: isCurrent, onClick: () => checkout(item.name, 'local') },
         { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: isCurrent || !refs?.current, onClick: () => merge(item.name) },
         { label: 'Create branch here…', onClick: () => askBranch(item.name) },
-        {
-          label: 'Delete branch',
-          danger: true,
-          disabled: isCurrent,
-          onClick: () => {
-            if (window.confirm(`Delete branch "${item.name}"?`)) {
-              void act('Deleting', () => git('deleteBranch', { name: item.name }), { ok: `Deleted ${item.name}`, undo: { label: `Delete branch ${item.name}` } });
-            }
-          },
-        },
+        ...deleteItems(item.name, null),
       );
     } else if (item.kind === 'remote') {
       items.push(
         { label: 'Checkout (track)', onClick: () => checkout(item.name, 'remote') },
         { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: !refs?.current, onClick: () => merge(item.name) },
+        ...deleteItems(null, item.name),
       );
     } else if (item.kind === 'stash') {
       items.push(...stashItems(item.ref));
