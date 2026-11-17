@@ -18,7 +18,7 @@ interface Props {
   redoLabel: string | null;
   onUndo: () => void;
   onRedo: () => void;
-  onOpen: () => void;
+  onOpen: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onFetch: () => void;
   onPull: () => void;
   onPush: () => void;
@@ -59,7 +59,7 @@ export function Toolbar(p: Props) {
   return (
     <header className="toolbar">
       <div className="tb-left">
-        <button className="tb-repo" onClick={p.onOpen} title="Open repository">
+        <button className="tb-repo" onClick={p.onOpen} title="Open a repository or pick a recent one">
           <Icon name="folder" size={16} />
           <span className="tb-repo-text">
             <small>repository</small>

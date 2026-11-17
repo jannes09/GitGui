@@ -20,6 +20,7 @@ const PATHS = {
   back: 'M19 12H5M12 19l-7-7 7-7',
   undo: 'M3 7v6h6M3 13a9 9 0 1 0 3-7.7L3 8',
   redo: 'M21 7v6h-6M21 13a9 9 0 1 1-3-7.7L21 8',
+  warn: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01',
 } as const;
 
 export type IconName = keyof typeof PATHS;

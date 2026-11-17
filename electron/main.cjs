@@ -18,7 +18,7 @@ function createWindow() {
     backgroundColor: '#16181d',
     title: 'GitGui',
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#1b1e25', symbolColor: '#cfd3dc', height: 48 },
+    titleBarOverlay: { color: '#12141a', symbolColor: '#cfd3dc', height: 36 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

@@ -52,6 +52,10 @@ export interface StatusFile {
   untracked?: boolean;
   conflicted?: boolean;
 }
+export interface Operation {
+  kind: 'merge' | 'cherry-pick' | 'revert' | 'rebase';
+  detail: string;
+}
 export interface StatusData {
   branch: string | null;
   oid: string | null;
@@ -59,6 +63,10 @@ export interface StatusData {
   ahead: number;
   behind: number;
   files: StatusFile[];
+  /** a merge, cherry-pick, revert or rebase that stopped and is waiting for the user */
+  operation: Operation | null;
+  /** files that were conflicted and have been resolved since (they can be reopened) */
+  resolved: string[];
 }
 
 export interface CommitFile {
@@ -119,4 +127,30 @@ export interface DiffTarget {
   staged?: boolean;
   untracked?: boolean;
   hash?: string;
+  /** open the conflict resolver instead of a diff */
+  conflict?: boolean;
+}
+
+/** What the resolver needs to know about one conflicted file. */
+export interface ConflictFileInfo {
+  path: string;
+  hasBase: boolean;
+  hasOurs: boolean;
+  hasTheirs: boolean;
+  /** the file exists in the working tree */
+  exists: boolean;
+  content: string | null;
+  binary: boolean;
+  tooLarge: boolean;
+  /** not valid UTF-8, so editing it here could damage it */
+  lossy: boolean;
+}
+
+/** Returned by actions that can stop on conflicts instead of failing. */
+export interface ConflictOutcome {
+  conflicts: boolean;
+  files?: number;
+  stashKept?: boolean;
+  fastForward?: boolean;
+  upToDate?: boolean;
 }

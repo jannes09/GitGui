@@ -192,6 +192,78 @@ async function gcmStatus() {
   return { available: true, version: v.stdout.split('+')[0], accounts };
 }
 
+// ---- conflicts and unfinished operations -----------------------------------
+// A merge, cherry-pick, revert or rebase that hits conflicts stops half way. Git records that in
+// files inside the git directory; the UI shows a banner and lets the user resolve, continue or abort.
+
+async function operationState(repo) {
+  const dir = path.normalize((await run(repo, ['rev-parse', '--absolute-git-dir'])).trim());
+  const has = (name) => fs.existsSync(path.join(dir, name));
+  const first = (name) => {
+    try {
+      return fs.readFileSync(path.join(dir, name), 'utf8').split('\n')[0].trim();
+    } catch {
+      return '';
+    }
+  };
+  const rebaseDir = has('rebase-merge') ? 'rebase-merge' : has('rebase-apply') ? 'rebase-apply' : null;
+  if (rebaseDir) {
+    const merge = rebaseDir === 'rebase-merge';
+    const now = first(`${rebaseDir}/${merge ? 'msgnum' : 'next'}`);
+    const end = first(`${rebaseDir}/${merge ? 'end' : 'last'}`);
+    return { kind: 'rebase', detail: now && end ? `commit ${now} of ${end}` : '' };
+  }
+  if (has('MERGE_HEAD')) return { kind: 'merge', detail: first('MERGE_MSG') };
+  if (has('CHERRY_PICK_HEAD')) return { kind: 'cherry-pick', detail: first('CHERRY_PICK_HEAD').slice(0, 7) };
+  if (has('REVERT_HEAD')) return { kind: 'revert', detail: first('REVERT_HEAD').slice(0, 7) };
+  return null;
+}
+
+// Stages of a conflicted file: 1 = common ancestor, 2 = ours (HEAD), 3 = theirs (incoming).
+async function unmergedEntries(repo, files) {
+  const out = await run(repo, ['ls-files', '-u', '-z', ...(files ? ['--', ...files] : [])]);
+  const entries = new Map();
+  for (const rec of out.split('\0')) {
+    const m = /^\d+ ([0-9a-f]+) ([123])\t([\s\S]+)$/.exec(rec);
+    if (!m) continue;
+    if (!entries.has(m[3])) entries.set(m[3], {});
+    entries.get(m[3])[m[2]] = m[1];
+  }
+  return entries;
+}
+
+// Files that were conflicted and have since been resolved, so a resolution can be reopened.
+async function resolvedPaths(repo) {
+  const out = await run(repo, ['ls-files', '--resolve-undo', '-z']).catch(() => '');
+  const set = new Set();
+  for (const rec of out.split('\0')) {
+    const i = rec.indexOf('\t');
+    if (i > 0) set.add(rec.slice(i + 1));
+  }
+  return [...set];
+}
+
+function insideRepo(repo, file) {
+  safeFiles([file]);
+  const root = path.resolve(repo);
+  const abs = path.resolve(root, file);
+  if (!abs.startsWith(root + path.sep)) throw new Error('Path is outside the repository');
+  return abs;
+}
+
+async function requireConflict(repo, file) {
+  const stages = (await unmergedEntries(repo, [file])).get(file);
+  if (!stages) throw new Error('This file is not in conflict (any more). Refresh the view.');
+  return stages;
+}
+
+// A failed merge-like command is not an error when it simply stopped on conflicts.
+async function conflictsOrThrow(repo, error, extra = {}) {
+  const [op, files] = await Promise.all([operationState(repo).catch(() => null), unmergedEntries(repo).catch(() => new Map())]);
+  if (files.size > 0 && (op || /CONFLICT/i.test(error.message))) return { conflicts: true, files: files.size, ...extra };
+  throw error;
+}
+
 const handlers = {
   async openRepo({ path: p }) {
     assertRepo(p);
@@ -267,7 +339,10 @@ const handlers = {
 
   async status({ repo }) {
     assertRepo(repo);
-    const out = await run(repo, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all']);
+    const [out, operation] = await Promise.all([
+      run(repo, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=all']),
+      operationState(repo).catch(() => null),
+    ]);
     const parts = out.split('\0');
     const info = { branch: null, oid: null, upstream: null, ahead: 0, behind: 0 };
     const files = [];
@@ -296,7 +371,8 @@ const handlers = {
         files.push({ path: e.slice(2), index: '.', worktree: '?', untracked: true });
       }
     }
-    return { ...info, files };
+    const resolved = operation ? await resolvedPaths(repo) : [];
+    return { ...info, files, operation, resolved };
   },
 
   async commitDetail({ repo, hash }) {
@@ -396,7 +472,12 @@ const handlers = {
   },
   async pull({ repo }) {
     assertRepo(repo);
-    await run(repo, ['pull', '--no-edit']);
+    try {
+      await run(repo, ['pull', '--no-edit']);
+    } catch (e) {
+      return conflictsOrThrow(repo, e);
+    }
+    return { conflicts: false };
   },
   async push({ repo }) {
     assertRepo(repo);
@@ -443,17 +524,135 @@ const handlers = {
   },
   async merge({ repo, ref }) {
     assertRepo(repo);
-    const out = await run(repo, ['merge', '--no-edit', safeRef(ref)]);
+    let out;
+    try {
+      out = await run(repo, ['merge', '--no-edit', safeRef(ref)]);
+    } catch (e) {
+      return { fastForward: false, upToDate: false, ...(await conflictsOrThrow(repo, e)) };
+    }
     // tell the UI what happened: a fast-forward creates no merge commit, so it is easy to miss
-    return { fastForward: /Fast-forward/.test(out), upToDate: /Already up to date/.test(out) };
+    return { fastForward: /Fast-forward/.test(out), upToDate: /Already up to date/.test(out), conflicts: false };
   },
   async cherryPick({ repo, hash }) {
     assertRepo(repo);
-    await run(repo, ['cherry-pick', safeRef(hash)]);
+    try {
+      await run(repo, ['cherry-pick', safeRef(hash)]);
+    } catch (e) {
+      return conflictsOrThrow(repo, e);
+    }
+    return { conflicts: false };
   },
   async revert({ repo, hash }) {
     assertRepo(repo);
-    await run(repo, ['revert', '--no-edit', safeRef(hash)]);
+    try {
+      await run(repo, ['revert', '--no-edit', safeRef(hash)]);
+    } catch (e) {
+      return conflictsOrThrow(repo, e);
+    }
+    return { conflicts: false };
+  },
+
+  // ---- resolving conflicts ----
+
+  // Everything the resolver needs about one conflicted file.
+  async conflictFile({ repo, file }) {
+    assertRepo(repo);
+    const stages = await requireConflict(repo, file);
+    const abs = insideRepo(repo, file);
+    const info = {
+      path: file,
+      hasBase: !!stages[1],
+      hasOurs: !!stages[2],
+      hasTheirs: !!stages[3],
+      exists: false,
+      content: null,
+      binary: false,
+      tooLarge: false,
+      lossy: false,
+    };
+    let stat = null;
+    try {
+      stat = fs.lstatSync(abs);
+    } catch {
+      /* deleted in the working tree */
+    }
+    if (!stat || !stat.isFile()) return info; // missing, or a symlink / folder we never edit
+    info.exists = true;
+    if (stat.size > 2 * 1024 * 1024) return { ...info, tooLarge: true };
+    const buf = fs.readFileSync(abs);
+    if (buf.includes(0)) return { ...info, binary: true };
+    const text = buf.toString('utf8');
+    // text that does not survive a round trip (e.g. Latin-1) would be damaged by editing it here
+    if (!Buffer.from(text, 'utf8').equals(buf)) return { ...info, lossy: true };
+    return { ...info, content: text };
+  },
+
+  // Settles a whole file at once: ours, theirs, keep what is on disk, or delete it.
+  async conflictResolve({ repo, file, action }) {
+    assertRepo(repo);
+    const stages = await requireConflict(repo, file);
+    if (action === 'ours' || action === 'theirs') {
+      if (!stages[action === 'ours' ? 2 : 3]) throw new Error(`The ${action} side has no version of this file. Choose Keep or Delete instead.`);
+      await run(repo, ['checkout', `--${action}`, '--', file]);
+      await run(repo, ['add', '--', file]);
+    } else if (action === 'keep') {
+      if (!fs.existsSync(insideRepo(repo, file))) throw new Error('The file is not on disk, so there is nothing to keep.');
+      await run(repo, ['add', '--', file]);
+    } else if (action === 'delete') {
+      await run(repo, ['rm', '-f', '--', file]);
+    } else {
+      throw new Error('Invalid resolution');
+    }
+  },
+
+  // Writes the resolved text and stages it.
+  async conflictSave({ repo, file, content }) {
+    assertRepo(repo);
+    await requireConflict(repo, file);
+    if (typeof content !== 'string' || content.length > 20 * 1024 * 1024) throw new Error('Invalid file content');
+    const abs = insideRepo(repo, file);
+    const stat = fs.lstatSync(abs);
+    if (!stat.isFile()) throw new Error('Only regular files can be edited here');
+    fs.writeFileSync(abs, content, 'utf8');
+    await run(repo, ['add', '--', file]);
+  },
+
+  // Puts the conflict markers back into a file that was resolved by mistake.
+  async conflictReopen({ repo, file }) {
+    assertRepo(repo);
+    insideRepo(repo, file);
+    if (!(await resolvedPaths(repo)).includes(file)) throw new Error('Git no longer remembers this conflict, so it cannot be reopened.');
+    await run(repo, ['checkout', '--merge', '--', file]);
+  },
+
+  async operationContinue({ repo }) {
+    assertRepo(repo);
+    const op = await operationState(repo);
+    if (!op) throw new Error('Nothing is in progress');
+    if ((await unmergedEntries(repo)).size > 0) throw new Error('Resolve all conflicted files first.');
+    try {
+      await run(repo, [op.kind, '--continue']);
+    } catch (e) {
+      return conflictsOrThrow(repo, e); // a rebase can stop again on the next commit
+    }
+    return { conflicts: false };
+  },
+  async operationSkip({ repo }) {
+    assertRepo(repo);
+    const op = await operationState(repo);
+    if (!op || op.kind === 'merge') throw new Error('There is nothing to skip');
+    try {
+      await run(repo, [op.kind, '--skip']);
+    } catch (e) {
+      return conflictsOrThrow(repo, e);
+    }
+    return { conflicts: false };
+  },
+  async operationAbort({ repo }) {
+    assertRepo(repo);
+    const op = await operationState(repo);
+    if (!op) throw new Error('Nothing is in progress');
+    await run(repo, [op.kind, '--abort']);
   },
   async reset({ repo, hash, mode }) {
     assertRepo(repo);
@@ -615,12 +814,22 @@ const handlers = {
   async stashPop({ repo, ref }) {
     assertRepo(repo);
     if (!STASH_RE.test(ref || '')) throw new Error('Invalid stash');
-    await run(repo, ['stash', 'pop', ref]);
+    try {
+      await run(repo, ['stash', 'pop', ref]);
+    } catch (e) {
+      return conflictsOrThrow(repo, e, { stashKept: true }); // git keeps the stash when applying it conflicts
+    }
+    return { conflicts: false };
   },
   async stashApply({ repo, ref }) {
     assertRepo(repo);
     if (!STASH_RE.test(ref || '')) throw new Error('Invalid stash');
-    await run(repo, ['stash', 'apply', ref]);
+    try {
+      await run(repo, ['stash', 'apply', ref]);
+    } catch (e) {
+      return conflictsOrThrow(repo, e, { stashKept: true });
+    }
+    return { conflicts: false };
   },
   async stashDrop({ repo, ref }) {
     assertRepo(repo);

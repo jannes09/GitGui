@@ -110,7 +110,10 @@ export interface PromptSpec {
 export function PromptDialog({ spec, onClose }: { spec: PromptSpec; onClose: () => void }) {
   const [value, setValue] = useState(spec.value ?? '');
   const input = useRef<HTMLInputElement>(null);
-  useEffect(() => input.current?.focus(), []);
+  useEffect(() => {
+    input.current?.focus();
+    input.current?.select(); // renaming: typing replaces the old text
+  }, []);
 
   const submit = () => {
     if (!value.trim()) return;

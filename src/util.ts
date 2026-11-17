@@ -52,3 +52,9 @@ export function parseTrack(track: string): { ahead: number; behind: number } {
   const b = /behind (\d+)/.exec(track);
   return { ahead: a ? Number(a[1]) : 0, behind: b ? Number(b[1]) : 0 };
 }
+
+/** Whether two repository paths are the same folder (Windows paths ignore case). */
+export function samePath(a: string, b: string): boolean {
+  const norm = (p: string) => p.replace(/\//g, '\\').toLowerCase();
+  return a === b || (/^[a-z]:[\\/]/i.test(a) && norm(a) === norm(b));
+}

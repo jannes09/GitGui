@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, isElectron, pickFolder } from './api';
+import { ConflictView } from './components/ConflictView';
 import { DetachedBanner } from './components/DetachedBanner';
+import { OperationBanner } from './components/OperationBanner';
+import { RepoTabs, type RepoTab, type TabInfo } from './components/RepoTabs';
 import { DiffView } from './components/DiffView';
 import { GraphView } from './components/GraphView';
 import { Splitter } from './components/Splitter';
@@ -9,7 +12,7 @@ import { ConfirmDialog, ContextMenu, PromptDialog, type ConfirmSpec, type MenuIt
 import { CommitPanel, StagingPanel } from './components/RightPanel';
 import { Sidebar, type SidebarItem } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
-import { parseTrack } from './util';
+import { basename, parseTrack, samePath } from './util';
 import { DEFAULT_REFS_W, WIP_HASH, computeGraph } from './graph';
 import { Icon } from './icons';
 import type {
@@ -17,6 +20,7 @@ import type {
   AccountsData,
   ActiveAccount,
   Commit,
+  ConflictOutcome,
   DiffTarget,
   RefsData,
   RepoSnapshot,
@@ -28,6 +32,7 @@ import type {
 
 const LAST_REPO_KEY = 'gitgui.lastRepo';
 const RECENT_KEY = 'gitgui.recent';
+const TABS_KEY = 'gitgui.tabs';
 const PAGE = 1000;
 const MAX_HISTORY = 50;
 
@@ -63,6 +68,34 @@ function readRecent(): string[] {
   }
 }
 
+/** The tabs that were open last time. Falls back to the single repository older versions remembered. */
+function readTabs(): RepoTab[] {
+  try {
+    const v = JSON.parse(readStore(TABS_KEY) ?? 'null');
+    if (Array.isArray(v)) {
+      const tabs = v
+        .filter((t): t is RepoTab => !!t && typeof t.root === 'string' && typeof t.name === 'string' && t.root.length > 0)
+        .map((t) => ({ ...t, alias: typeof t.alias === 'string' && t.alias.trim() ? t.alias.trim().slice(0, 60) : undefined }));
+      return tabs.filter((t, i) => tabs.findIndex((o) => samePath(o.root, t.root)) === i);
+    }
+  } catch {
+    /* fall through to the old single-repository setting */
+  }
+  const last = readStore(LAST_REPO_KEY);
+  return last ? [{ root: last, name: basename(last) }] : [];
+}
+
+function summarize(s: StatusData): TabInfo {
+  return { branch: s.branch, changes: s.files.length, conflicts: s.files.filter((f) => f.conflicted).length };
+}
+
+/** What a tab remembers while another repository is showing. */
+interface TabMemory {
+  undo: UndoOp[];
+  redo: UndoOp[];
+  sel: Selection;
+}
+
 interface Toast {
   text: string;
   error: boolean;
@@ -89,6 +122,8 @@ export function App() {
   const [acctDialog, setAcctDialog] = useState(false);
   const [acctBusy, setAcctBusy] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>(readRecent);
+  const [tabs, setTabs] = useState<RepoTab[]>(readTabs);
+  const [tabInfo, setTabInfo] = useState<Record<string, TabInfo | undefined>>({});
   const [undoStack, setUndoStack] = useState<UndoOp[]>([]);
   const [redoStack, setRedoStack] = useState<UndoOp[]>([]);
   const [sidebarW, setSidebarW] = useState(() => readWidth(SIDEBAR));
@@ -99,12 +134,22 @@ export function App() {
   useEffect(() => writeStore(RIGHT.key, String(rightW)), [rightW]);
   useEffect(() => writeStore(REFS.key, String(refsW)), [refsW]);
 
+  useEffect(() => writeStore(TABS_KEY, JSON.stringify(tabs)), [tabs]);
+
   const undoRef = useRef(undoStack);
   const redoRef = useRef(redoStack);
   const busyRef = useRef<string | null>(null);
+  const selRef = useRef<Selection>(null);
+  const statusRef = useRef<StatusData | null>(null);
+  const tabsRef = useRef(tabs);
+  const memory = useRef(new Map<string, TabMemory>()); // per-repository undo history and selection
+  const openSeq = useRef(0); // only the most recent tab switch may finish loading
   undoRef.current = undoStack;
   redoRef.current = redoStack;
   busyRef.current = busy;
+  selRef.current = sel;
+  statusRef.current = status;
+  tabsRef.current = tabs;
 
   const refsKey = useRef('');
   const limitRef = useRef(limit);
@@ -153,10 +198,50 @@ export function App() {
     }
   }, []);
 
+  // Reads the status of every tab that is not showing, so their badges stay current.
+  const refreshTabs = useCallback(async () => {
+    const others = tabsRef.current.filter((t) => !repoRef.current || !samePath(t.root, repoRef.current));
+    const entries = await Promise.all(
+      others.map(async (t): Promise<[string, TabInfo]> => {
+        try {
+          return [t.root, summarize(await call<StatusData>('status', { repo: t.root }))];
+        } catch {
+          return [t.root, { branch: null, changes: 0, conflicts: 0, missing: true }];
+        }
+      }),
+    );
+    setTabInfo((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+  }, []);
+
+  // Opening a repository shows it in its tab, adding the tab if it is new.
   const openRepo = useCallback(
     async (path: string) => {
+      const seq = ++openSeq.current; // if the user clicks another tab meanwhile, only the last click wins
       try {
         const info = await call<{ root: string; name: string }>('openRepo', { path });
+        if (seq !== openSeq.current) return;
+        setTabs((list) =>
+          list.some((t) => samePath(t.root, info.root))
+            ? list.map((t) => (samePath(t.root, info.root) ? { ...t, root: info.root, name: info.name } : t))
+            : [...list, { root: info.root, name: info.name }],
+        );
+        writeStore(LAST_REPO_KEY, info.root);
+        const recents = [info.root, ...readRecent().filter((p) => p !== info.root)].slice(0, 8);
+        writeStore(RECENT_KEY, JSON.stringify(recents));
+        setRecent(recents);
+
+        const prev = repoRef.current;
+        if (prev && samePath(prev, info.root)) {
+          await reload(info.root, true); // already showing: just refresh
+          return;
+        }
+        if (prev) {
+          // leaving a repository: keep its undo history and selection for when its tab is opened again
+          memory.current.set(prev, { undo: undoRef.current, redo: redoRef.current, sel: selRef.current });
+          const left = statusRef.current;
+          if (left) setTabInfo((t) => ({ ...t, [prev]: summarize(left) }));
+        }
+        const saved = memory.current.get(info.root);
         repoRef.current = info.root;
         refsKey.current = '';
         setRepo(info);
@@ -165,28 +250,72 @@ export function App() {
         setRefs(null);
         setStatus(null);
         setCommits([]);
-        setSel(null);
+        setSel(saved?.sel ?? null);
         setDiff(null);
         setQuery('');
-        setUndoStack([]);
-        setRedoStack([]);
+        setUndoStack(saved?.undo ?? []);
+        setRedoStack(saved?.redo ?? []);
         setLimit(PAGE);
         limitRef.current = PAGE;
-        writeStore(LAST_REPO_KEY, info.root);
-        const list = [info.root, ...readRecent().filter((p) => p !== info.root)].slice(0, 8);
-        writeStore(RECENT_KEY, JSON.stringify(list));
-        setRecent(list);
         await reload(info.root, true);
+        void refreshTabs();
       } catch (e) {
-        notifyError((e as Error).message);
+        if (seq === openSeq.current) notifyError((e as Error).message);
       }
     },
-    [reload, notifyError, loadActive],
+    [reload, notifyError, loadActive, refreshTabs],
   );
+
+  const closeTabs = useCallback(
+    (roots: string[]) => {
+      const list = tabsRef.current;
+      const rest = list.filter((t) => !roots.some((r) => samePath(r, t.root)));
+      if (rest.length === list.length) return;
+      tabsRef.current = rest;
+      setTabs(rest);
+      for (const r of roots) memory.current.delete(r);
+      setTabInfo((info) => Object.fromEntries(Object.entries(info).filter(([k]) => !roots.some((r) => samePath(r, k)))));
+      const active = repoRef.current;
+      if (!active || !roots.some((r) => samePath(r, active))) return;
+      // the tab that was showing is gone: move to its right-hand neighbour, or the last one left
+      const at = list.findIndex((t) => samePath(t.root, active));
+      const next = rest.find((t) => list.indexOf(t) > at) ?? rest[rest.length - 1];
+      if (next) {
+        void openRepo(next.root);
+        return;
+      }
+      // that was the last tab: back to the welcome screen
+      openSeq.current++;
+      repoRef.current = null;
+      refsKey.current = '';
+      setRepo(null);
+      setRefs(null);
+      setStatus(null);
+      setCommits([]);
+      setSel(null);
+      setDiff(null);
+      setUndoStack([]);
+      setRedoStack([]);
+      setActiveAcct(null);
+      writeStore(LAST_REPO_KEY, '');
+    },
+    [openRepo],
+  );
+  const closeTab = useCallback((root: string) => closeTabs([root]), [closeTabs]);
+
+  const moveTab = useCallback((from: number, to: number) => {
+    setTabs((list) => {
+      if (from === to || !list[from] || to < 0 || to >= list.length) return list;
+      const next = [...list];
+      next.splice(to, 0, ...next.splice(from, 1));
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const last = readStore(LAST_REPO_KEY);
-    if (last) void openRepo(last);
+    const start = last && tabsRef.current.some((t) => samePath(t.root, last)) ? last : tabsRef.current[0]?.root;
+    if (start) void openRepo(start);
     void loadAccounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -194,6 +323,7 @@ export function App() {
   // pick up changes made outside the app whenever the window regains focus
   useEffect(() => {
     const onFocus = () => {
+      void refreshTabs();
       const root = repoRef.current;
       if (!root) return;
       void reload(root).catch(() => {});
@@ -201,7 +331,12 @@ export function App() {
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [reload, loadActive]);
+  }, [reload, loadActive, refreshTabs]);
+
+  // a tab that was just restored or added gets its badge without waiting for a focus event
+  useEffect(() => {
+    void refreshTabs();
+  }, [tabs.length, refreshTabs]);
 
   // load more history when the user scrolls near the end
   useEffect(() => {
@@ -221,11 +356,23 @@ export function App() {
   // a working-tree diff has nothing left to show once its file is committed, reverted or fully (un)staged
   useEffect(() => {
     if (!diff || diff.hash || !status) return;
-    const still = status.files.some((f) =>
-      f.path === diff.path && (diff.staged ? f.index !== '.' && f.index !== '?' : f.worktree !== '.' || !!f.conflicted),
+    const still = status.files.some(
+      (f) =>
+        f.path === diff.path &&
+        (diff.conflict
+          ? !!f.conflicted
+          : !f.conflicted && (diff.staged ? f.index !== '.' && f.index !== '?' : f.worktree !== '.')),
     );
     if (!still) setDiff(null);
   }, [diff, status]);
+
+  // When a merge (or similar) stops on conflicts, show the changes panel where they are listed.
+  const conflictCountNow = status?.files.filter((f) => f.conflicted).length ?? 0;
+  const lastConflicts = useRef(0);
+  useEffect(() => {
+    if (conflictCountNow > 0 && lastConflicts.current === 0) setSel({ kind: 'wip' });
+    lastConflicts.current = conflictCountNow;
+  }, [conflictCountNow]);
 
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === 'Escape' && setDiff(null);
@@ -259,8 +406,14 @@ export function App() {
           const after = await call<RepoSnapshot>('snapshot', { repo: root }).catch(() => null);
           if (after && JSON.stringify(after) !== JSON.stringify(before)) {
             const op: UndoOp = { label: undo.label, before, after, mode: undo.mode ?? 'keep' };
-            setUndoStack((s) => [...s, op].slice(-MAX_HISTORY));
-            setRedoStack([]);
+            if (repoRef.current === root) {
+              setUndoStack((s) => [...s, op].slice(-MAX_HISTORY));
+              setRedoStack([]);
+            } else {
+              // the user switched to another tab while this ran: file the step under its own repository
+              const m = memory.current.get(root);
+              if (m) memory.current.set(root, { ...m, undo: [...m.undo, op].slice(-MAX_HISTORY), redo: [] });
+            }
           }
         }
         if (opts.ok) notify(typeof opts.ok === 'function' ? opts.ok(result) : opts.ok);
@@ -560,11 +713,21 @@ export function App() {
     const remotes = refs.remoteBranches.filter((r) => r.hash === hash).map((r) => r.name);
     return [...locals, ...remotes];
   };
+  // Merge, cherry-pick, pull and friends stop on conflicts instead of failing; say so clearly.
+  const conflictText = (what: string, r: unknown): string | null => {
+    const c = r as ConflictOutcome | null;
+    if (!c?.conflicts) return null;
+    const n = c.files ?? 0;
+    return `${what} stopped: ${n} file${n === 1 ? ' has' : 's have'} conflicts. Resolve them in the changes panel.${c.stashKept ? ' The stash was kept.' : ''}`;
+  };
+
   const merge = (name: string) => {
     const into = refs?.current ?? 'the current branch';
-    void act('Merging', () => git<{ fastForward: boolean; upToDate: boolean }>('merge', { ref: name }), {
+    void act('Merging', () => git<ConflictOutcome>('merge', { ref: name }), {
       ok: (r) => {
-        const res = r as { fastForward: boolean; upToDate: boolean } | null;
+        const stopped = conflictText('Merge', r);
+        if (stopped) return stopped;
+        const res = r as ConflictOutcome | null;
         if (res?.upToDate) return `${name} is already merged into ${into}`;
         if (res?.fastForward) return `Fast-forwarded ${into} to ${name} (no merge commit needed)`;
         return `Merged ${name} into ${into}`;
@@ -574,8 +737,14 @@ export function App() {
   };
 
   const stashItems = (ref: string): MenuItem[] => [
-    { label: 'Pop stash', onClick: () => void act('Popping stash', () => git('stashPop', { ref }), { ok: 'Stash applied and dropped' }) },
-    { label: 'Apply stash', onClick: () => void act('Applying stash', () => git('stashApply', { ref }), { ok: 'Stash applied' }) },
+    {
+      label: 'Pop stash',
+      onClick: () => void act('Popping stash', () => git('stashPop', { ref }), { ok: (r) => conflictText('Applying the stash', r) ?? 'Stash applied and dropped' }),
+    },
+    {
+      label: 'Apply stash',
+      onClick: () => void act('Applying stash', () => git('stashApply', { ref }), { ok: (r) => conflictText('Applying the stash', r) ?? 'Stash applied' }),
+    },
     {
       label: 'Drop stash',
       danger: true,
@@ -712,11 +881,19 @@ export function App() {
       { label: '', onClick: () => {}, separator: true },
       {
         label: 'Cherry-pick commit',
-        onClick: () => void act('Cherry-picking', () => git('cherryPick', { hash }), { ok: `Cherry-picked ${short}`, undo: { label: `Cherry-pick ${short}` } }),
+        onClick: () =>
+          void act('Cherry-picking', () => git('cherryPick', { hash }), {
+            ok: (r) => conflictText('Cherry-pick', r) ?? `Cherry-picked ${short}`,
+            undo: { label: `Cherry-pick ${short}` },
+          }),
       },
       {
         label: 'Revert commit',
-        onClick: () => void act('Reverting', () => git('revert', { hash }), { ok: `Reverted ${short}`, undo: { label: `Revert ${short}` } }),
+        onClick: () =>
+          void act('Reverting', () => git('revert', { hash }), {
+            ok: (r) => conflictText('Revert', r) ?? `Reverted ${short}`,
+            undo: { label: `Revert ${short}` },
+          }),
       },
       { label: '', onClick: () => {}, separator: true },
       {
@@ -794,9 +971,150 @@ export function App() {
     if (window.confirm(msg)) void act('Discarding', () => git('discard', { files: [f.path], untracked: f.untracked }), { log: false });
   };
 
+  /* ---------- conflicts and unfinished operations ---------- */
+
+  const operation = status?.operation ?? null;
+  const conflicted = status?.files.filter((f) => f.conflicted) ?? [];
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  const continueOperation = () => {
+    if (!operation) return;
+    const name = cap(operation.kind);
+    void act('Continuing', () => git<ConflictOutcome>('operationContinue'), {
+      ok: (r) => ((r as ConflictOutcome | null)?.conflicts ? 'The next step stopped on conflicts. Resolve them to carry on.' : `${name} complete`),
+      undo: operation.kind === 'rebase' ? undefined : { label: name },
+    });
+  };
+  const skipOperation = () => {
+    void act('Skipping', () => git<ConflictOutcome>('operationSkip'), {
+      ok: (r) => ((r as ConflictOutcome | null)?.conflicts ? 'The next step stopped on conflicts. Resolve them to carry on.' : 'Skipped'),
+    });
+  };
+  const abortOperation = () => {
+    if (!operation) return;
+    setConfirm({
+      title: `Abort the ${operation.kind}?`,
+      message: 'Everything done so far, including the conflicts you resolved, is thrown away and the repository goes back to how it was before it started.',
+      confirm: `Abort ${operation.kind}`,
+      onConfirm: () => void act('Aborting', () => git('operationAbort'), { ok: `${cap(operation.kind)} aborted` }),
+    });
+  };
+  const reopenConflict = async (path: string) => {
+    const ok = await act('Reopening', () => git('conflictReopen', { file: path }), { log: false, ok: `Reopened the conflict in ${path}` });
+    if (ok) setDiff({ path, conflict: true });
+  };
+  // after a file was resolved: carry straight on to the next conflicted file
+  const afterResolved = async (path: string) => {
+    const root = repoRef.current;
+    if (!root) return;
+    try {
+      const s = await call<StatusData>('status', { repo: root });
+      if (repoRef.current !== root) return;
+      setStatus(s);
+      const next = s.files.find((f) => f.conflicted && f.path !== path);
+      setDiff(next ? { path: next.path, conflict: true } : null);
+      notify(
+        next
+          ? `Resolved ${path}. ${s.files.filter((f) => f.conflicted).length} left.`
+          : s.operation
+            ? `All conflicts resolved. Press "Continue ${s.operation.kind}" to finish.`
+            : 'All conflicts resolved.',
+      );
+    } catch (e) {
+      notifyError((e as Error).message);
+    }
+    void reload(root).catch(() => {});
+  };
+
   const selectedHash = sel?.kind === 'wip' ? WIP_HASH : sel ? sel.hash : null;
   const branchName = status?.branch ?? refs?.current ?? null;
-  const detachedAt = repo && refs && refs.current === null ? refs.head : null;
+  // a rebase also runs on a detached HEAD, but that is not something to "get out of"
+  const detachedAt = repo && refs && refs.current === null && operation?.kind !== 'rebase' ? refs.head : null;
+
+  /* ---------- repository tabs ---------- */
+
+  const tabBadges = useMemo(
+    () => ({ ...tabInfo, ...(repo && status ? { [repo.root]: summarize(status) } : {}) }),
+    [tabInfo, repo, status],
+  );
+
+  const repoMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation(); // the menu closes on any window click, including this one
+    const r = e.currentTarget.getBoundingClientRect();
+    const sep: MenuItem = { label: '', onClick: () => {}, separator: true };
+    const items: MenuItem[] = [{ label: 'Open repository…', onClick: () => void openDialog() }];
+    const others = recent.filter((p) => !tabs.some((t) => samePath(t.root, p)));
+    if (others.length) {
+      items.push(sep, { label: 'Recent', disabled: true, onClick: () => {} }, ...others.map((p) => ({ label: p, onClick: () => void openRepo(p) })));
+    }
+    setMenu({ x: r.left, y: r.bottom + 4, items });
+  };
+
+  // An alias is only a label on the tab: the repository and its folder are not renamed.
+  const setAlias = (root: string, alias: string | undefined) =>
+    setTabs((list) => list.map((t) => (samePath(t.root, root) ? { ...t, alias } : t)));
+
+  const renameTab = (root: string) => {
+    const tab = tabs.find((t) => samePath(t.root, root));
+    if (!tab) return;
+    setPrompt({
+      title: 'Rename tab',
+      label: `Name to show on this tab (the repository stays "${tab.name}")`,
+      value: tab.alias ?? tab.name,
+      submit: 'Rename',
+      onSubmit: (v) => setAlias(root, v.trim().slice(0, 60) === tab.name ? undefined : v.trim().slice(0, 60)),
+    });
+  };
+
+  const tabMenu = (e: React.MouseEvent, root: string) => {
+    e.preventDefault();
+    const sep: MenuItem = { label: '', onClick: () => {}, separator: true };
+    const at = tabs.findIndex((t) => samePath(t.root, root));
+    setMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Rename tab…', onClick: () => renameTab(root) },
+        { label: 'Reset tab name', disabled: !tabs[at]?.alias, onClick: () => setAlias(root, undefined) },
+        sep,
+        { label: 'Close tab', onClick: () => closeTab(root) },
+        { label: 'Close other tabs', disabled: tabs.length < 2, onClick: () => closeTabs(tabs.filter((t) => !samePath(t.root, root)).map((t) => t.root)) },
+        { label: 'Close tabs to the right', disabled: at < 0 || at >= tabs.length - 1, onClick: () => closeTabs(tabs.slice(at + 1).map((t) => t.root)) },
+        sep,
+        { label: 'Copy path', onClick: () => void navigator.clipboard.writeText(root) },
+      ],
+    });
+  };
+
+  // Ctrl+Tab / Ctrl+Shift+Tab (or Ctrl+PageDown/PageUp) cycle, Ctrl+1…9 jump, Ctrl+W closes, Ctrl+T opens
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const list = tabsRef.current;
+      const here = list.findIndex((t) => !!repoRef.current && samePath(t.root, repoRef.current));
+      const key = e.key.toLowerCase();
+      if (e.key === 'Tab' || e.key === 'PageDown' || e.key === 'PageUp') {
+        if (list.length < 2) return;
+        e.preventDefault();
+        const dir = e.key === 'PageUp' || (e.key === 'Tab' && e.shiftKey) ? -1 : 1;
+        void openRepo(list[(Math.max(here, 0) + dir + list.length) % list.length].root);
+      } else if (key === 'w' && !e.shiftKey && here >= 0) {
+        e.preventDefault();
+        closeTabs([list[here].root]);
+      } else if (key === 't' && !e.shiftKey) {
+        e.preventDefault();
+        void openDialog();
+      } else if (/^[1-9]$/.test(e.key) && !e.shiftKey) {
+        const t = list[e.key === '9' ? list.length - 1 : Number(e.key) - 1];
+        if (t) {
+          e.preventDefault();
+          void openRepo(t.root);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openRepo, closeTabs, openDialog]);
 
   const switchBranchMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation(); // the menu closes on any window click, including this one
@@ -807,6 +1125,17 @@ export function App() {
 
   return (
     <div className="app">
+      <RepoTabs
+        tabs={tabs}
+        active={repo?.root ?? null}
+        info={tabBadges}
+        onSelect={(root) => void openRepo(root)}
+        onClose={closeTab}
+        onRename={renameTab}
+        onAdd={() => void openDialog()}
+        onMove={moveTab}
+        onContext={tabMenu}
+      />
       <Toolbar
         repoName={repo?.name ?? null}
         branch={repo ? branchName : null}
@@ -817,7 +1146,7 @@ export function App() {
         matchInfo={matchList.length ? `${Math.min(matchIdx + 1, matchList.length)}/${matchList.length}` : '0'}
         onQuery={setQuery}
         onSearchKey={onSearchKey}
-        onOpen={() => void openDialog()}
+        onOpen={repoMenu}
         account={
           repo
             ? {
@@ -835,7 +1164,7 @@ export function App() {
         redoLabel={redoStack.length ? redoStack[redoStack.length - 1].label : null}
         onUndo={() => void stepHistory('undo')}
         onRedo={() => void stepHistory('redo')}
-        onPull={() => netAct('Pulling', () => git('pull'), { ok: 'Pull complete', undo: { label: 'Pull' } })}
+        onPull={() => netAct('Pulling', () => git('pull'), { ok: (r) => conflictText('Pull', r) ?? 'Pull complete', undo: { label: 'Pull' } })}
         onPush={() => netAct('Pushing', () => git('push'), { ok: 'Push complete' })}
         onBranch={() => askBranch()}
         onStash={() => {
@@ -844,7 +1173,9 @@ export function App() {
         }}
         onPop={() => {
           if (!refs?.stashes.length) return notify('No stashes to pop', true);
-          void act('Popping stash', () => git('stashPop', { ref: refs.stashes[0].ref }), { ok: 'Stash applied and dropped' });
+          void act('Popping stash', () => git('stashPop', { ref: refs.stashes[0].ref }), {
+            ok: (r) => conflictText('Applying the stash', r) ?? 'Stash applied and dropped',
+          });
         }}
       />
 
@@ -860,6 +1191,25 @@ export function App() {
         />
       )}
 
+      {operation && (
+        <OperationBanner
+          operation={operation}
+          remaining={conflicted.length}
+          busy={busy !== null}
+          onContinue={continueOperation}
+          onSkip={skipOperation}
+          onAbort={abortOperation}
+        />
+      )}
+      {!operation && conflicted.length > 0 && (
+        <div className="banner conflict" role="status">
+          <Icon name="warn" size={15} />
+          <span className="banner-text">
+            <strong>{conflicted.length} file{conflicted.length === 1 ? ' has' : 's have'} conflicts.</strong> Resolve each one in the changes panel and stage it. If this came from a stash, it was kept: drop it when you are done.
+          </span>
+        </div>
+      )}
+
       {repo ? (
         <div className="main" style={{ ['--sb-w' as string]: `${sidebarW}px`, ['--rp-w' as string]: `${rightW}px` }}>
           <Sidebar refs={refs} onFocus={onSidebarFocus} onActivate={onSidebarActivate} onContext={sidebarMenu} />
@@ -872,7 +1222,15 @@ export function App() {
             onReset={() => setSidebarW(SIDEBAR.def)}
           />
           <section className="center">
-            {diff ? (
+            {diff?.conflict ? (
+              <ConflictView
+                repo={repo.root}
+                path={diff.path}
+                onClose={() => setDiff(null)}
+                onResolved={(p) => void afterResolved(p)}
+                onError={notifyError}
+              />
+            ) : diff ? (
               <DiffView
                 repo={repo.root}
                 target={diff}
@@ -907,7 +1265,7 @@ export function App() {
             onChange={setRightW}
             onReset={() => setRightW(RIGHT.def)}
           />
-          <aside className="right">
+          <aside className="right" tabIndex={-1}>
             {sel?.kind === 'wip' && status ? (
               <StagingPanel
                 files={status.files}
@@ -915,6 +1273,8 @@ export function App() {
                 author={activeAcct?.name ? `${activeAcct.name} <${activeAcct.email}>` : undefined}
                 busy={busy !== null}
                 active={diff}
+                resolved={status.resolved}
+                onReopen={(p) => void reopenConflict(p)}
                 onOpen={setDiff}
                 onStage={(paths) => void act('Staging', () => git('stage', { files: paths }), { log: false })}
                 onUnstage={(paths) => void act('Unstaging', () => git('unstage', { files: paths }), { log: false })}

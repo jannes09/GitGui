@@ -136,11 +136,11 @@ export function DiffView({ repo, target, onClose, onChanged, onError }: Props) {
   return (
     <div className="diff">
       <div className="diff-head">
-        <button className="btn ghost" onClick={onClose}>
-          <Icon name="back" size={14} /> Back to graph
-        </button>
         <span className="diff-path">{target.path}</span>
         <span className="diff-tag">{target.hash ? 'Commit' : target.staged ? 'Staged' : target.untracked ? 'New file' : 'Unstaged'}</span>
+        <button className="icon-btn" onClick={onClose} title="Back to the graph (Esc)" aria-label="Back to the graph">
+          <Icon name="close" size={16} />
+        </button>
       </div>
       <div className="diff-body">
         {error && <div className="diff-msg error">{error}</div>}

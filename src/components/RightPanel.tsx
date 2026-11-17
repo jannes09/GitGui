@@ -53,8 +53,19 @@ function CommitBody({ text }: { text: string }) {
 }
 
 function sameTarget(a: DiffTarget, b: DiffTarget): boolean {
-  return a.path === b.path && !!a.staged === !!b.staged && a.hash === b.hash;
+  return a.path === b.path && !!a.staged === !!b.staged && !!a.conflict === !!b.conflict && a.hash === b.hash;
 }
+
+/** What git's two-letter conflict code means, in words. */
+const CONFLICT_KIND: Record<string, string> = {
+  UU: 'both modified',
+  AA: 'both added',
+  DD: 'both deleted',
+  DU: 'deleted by us',
+  UD: 'deleted by them',
+  AU: 'added by us',
+  UA: 'added by them',
+};
 
 /**
  * Up/Down arrows move through the listed files and open each one's diff.
@@ -70,7 +81,8 @@ function useFileNav(targets: DiffTarget[], active: DiffTarget | null, open: (t: 
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
       const el = e.target as HTMLElement | null;
-      if (el?.closest('input, textarea, select, [contenteditable="true"], .ctx-menu, .modal')) return;
+      // only while the file panel has focus; the graph uses the arrows when it has focus
+      if (!el?.closest('.right') || el.closest('input, textarea, select, [contenteditable="true"], .ctx-menu, .modal')) return;
       const { targets: list, active: current, open: openFile } = latest.current;
       if (list.length === 0) return;
       e.preventDefault();
@@ -174,6 +186,9 @@ interface StagingProps {
   active: DiffTarget | null;
   /** who commits will be made as, e.g. "Name <email>" */
   author?: string;
+  /** files whose conflict was resolved during the current operation (they can be reopened) */
+  resolved: string[];
+  onReopen: (path: string) => void;
   onOpen: (t: DiffTarget) => void;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
@@ -188,22 +203,24 @@ export function StagingPanel(p: StagingProps) {
   const [description, setDescription] = useState('');
   const [amend, setAmend] = useState(false);
 
+  const conflicts = useMemo(() => p.files.filter((f) => f.conflicted), [p.files]);
   const staged = useMemo(() => p.files.filter((f) => f.index !== '.' && f.index !== '?' && !f.conflicted), [p.files]);
-  const unstaged = useMemo(() => p.files.filter((f) => f.worktree !== '.' || f.conflicted), [p.files]);
+  const unstaged = useMemo(() => p.files.filter((f) => f.worktree !== '.' && !f.conflicted), [p.files]);
 
-  // arrow-key order matches what is on screen: unstaged files first, then staged
+  // arrow-key order matches what is on screen: conflicts, then unstaged files, then staged
   const targets = useMemo(
     () => [
+      ...conflicts.map((f): DiffTarget => ({ path: f.path, conflict: true })),
       ...unstaged.map((f): DiffTarget => ({ path: f.path, untracked: f.untracked })),
       ...staged.map((f): DiffTarget => ({ path: f.path, staged: true })),
     ],
-    [unstaged, staged],
+    [conflicts, unstaged, staged],
   );
   useFileNav(targets, p.active, p.onOpen);
   const isActive = (t: DiffTarget) => !!p.active && sameTarget(p.active, t);
 
   const message = description.trim() ? `${summary.trim()}\n\n${description.trim()}` : summary.trim();
-  const canCommit = !p.busy && (staged.length > 0 || amend) && (summary.trim().length > 0 || amend);
+  const canCommit = !p.busy && conflicts.length === 0 && (staged.length > 0 || amend) && (summary.trim().length > 0 || amend);
 
   const commit = async () => {
     if (await p.onCommit(message, amend)) {
@@ -216,6 +233,25 @@ export function StagingPanel(p: StagingProps) {
   return (
     <div className="rp">
       <div className="rp-scroll">
+        {conflicts.length > 0 && (
+          <>
+            <div className="rp-section conflict">
+              <span>Conflicts ({conflicts.length})</span>
+            </div>
+            {conflicts.map((f) => (
+              <div
+                key={'c' + f.path}
+                className={'f-row' + (isActive({ path: f.path, conflict: true }) ? ' active' : '')}
+                onClick={() => p.onOpen({ path: f.path, conflict: true })}
+                title="Click to resolve"
+              >
+                <span className="badge conflict">!</span>
+                <FileName path={f.path} />
+                <span className="f-note">{CONFLICT_KIND[f.index + f.worktree] ?? 'conflict'}</span>
+              </div>
+            ))}
+          </>
+        )}
         <div className="rp-section">
           <span>Unstaged files ({unstaged.length})</span>
           {unstaged.length > 0 && (
@@ -262,6 +298,11 @@ export function StagingPanel(p: StagingProps) {
             <Badge code={f.index} />
             <FileName path={f.path} />
             <span className="f-actions">
+              {p.resolved.includes(f.path) && (
+                <button className="icon-btn" title="Reopen the conflict" onClick={(e) => { e.stopPropagation(); p.onReopen(f.path); }}>
+                  <Icon name="warn" size={13} />
+                </button>
+              )}
               <button className="icon-btn" title="Unstage file" onClick={(e) => { e.stopPropagation(); p.onUnstage([f.path]); }}>
                 <Icon name="minus" size={14} />
               </button>
@@ -281,7 +322,7 @@ export function StagingPanel(p: StagingProps) {
           />
           <span className={'counter' + (summary.length > 72 ? ' over' : '')}>{72 - summary.length}</span>
         </div>
-        <textarea placeholder="Description" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
+        <textarea placeholder="Description" rows={5} value={description} onChange={(e) => setDescription(e.target.value)} />
         <label className="check">
           <input type="checkbox" checked={amend} onChange={(e) => setAmend(e.target.checked)} />
           Amend previous commit
@@ -289,7 +330,11 @@ export function StagingPanel(p: StagingProps) {
         <button className="btn commit" disabled={!canCommit} onClick={commit}>
           {amend ? 'Amend commit' : `Commit changes to ${staged.length} file${staged.length === 1 ? '' : 's'}`}
         </button>
-        <div className="hint">{p.branch ? `on ${p.branch}` : 'detached HEAD'} · Ctrl+Enter to commit</div>
+        <div className="hint">
+          {conflicts.length > 0
+            ? 'Resolve the conflicts above before committing'
+            : `${p.branch ? `on ${p.branch}` : 'detached HEAD'} · Ctrl+Enter to commit`}
+        </div>
         {p.author && (
           <div className="hint author" title={`Commits will be made as ${p.author}`}>
             committing as {p.author}

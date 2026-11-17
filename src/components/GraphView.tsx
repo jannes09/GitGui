@@ -184,6 +184,23 @@ export function GraphView({ data, remotes, selected, matches, focus, hasMore, re
   const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const end = Math.min(total, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN);
 
+  // Up / Down (and PageUp / PageDown / Home / End) move the selection, but only while the graph has focus.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || total === 0) return;
+    const page = Math.max(1, Math.floor(height / ROW_H) - 1);
+    const jump: Record<string, number> = { ArrowDown: 1, ArrowUp: -1, PageDown: page, PageUp: -page };
+    if (!(e.key in jump) && e.key !== 'Home' && e.key !== 'End') return;
+    e.preventDefault();
+    const at = data.rows.findIndex((r) => r.commit.hash === selected);
+    const to = e.key === 'Home' ? 0 : e.key === 'End' ? total - 1 : at < 0 ? 0 : Math.min(total - 1, Math.max(0, at + jump[e.key]));
+    if (to === at) return;
+    onSelect(data.rows[to].commit.hash);
+    const el = e.currentTarget;
+    const top = to * ROW_H;
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (top + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H - el.clientHeight;
+  };
+
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     setScrollTop(el.scrollTop);
@@ -204,7 +221,7 @@ export function GraphView({ data, remotes, selected, matches, focus, hasMore, re
         <div>AUTHOR</div>
         <div>DATE</div>
       </div>
-      <div className="g-scroll" ref={scroller} onScroll={onScroll}>
+      <div className="g-scroll" ref={scroller} onScroll={onScroll} onKeyDown={onKeyDown} tabIndex={0} aria-label="Commit history">
         <div style={{ height: total * ROW_H, position: 'relative' }}>
           {data.rows.slice(start, end).map((row, i) => (
             <Row
