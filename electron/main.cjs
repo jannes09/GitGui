@@ -17,6 +17,7 @@ function createWindow() {
     minHeight: 560,
     backgroundColor: '#16181d',
     title: 'GitGui',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'), // window / taskbar icon (the exe gets its own from build/icon.ico)
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#12141a', symbolColor: '#cfd3dc', height: 36 },
     webPreferences: {

@@ -11,6 +11,9 @@ npm run web      # same UI in a browser at http://localhost:5173 (dev only; type
 npm run build    # typecheck + production bundle into dist/
 npm start        # run the built bundle in Electron
 npm run smoke    # headless check that the Electron shell loads
+npm run dist     # build a portable Windows exe: release/GitGui-<version>-x64.exe
+npm run dist:installer   # the same as an installer (GitGui-Setup-<version>.exe)
+npm run icon     # redraw build/icon.png and build/icon.ico (scripts/make-icon.cjs)
 npm test         # backend and parser tests against temporary repos
 ```
 
@@ -77,4 +80,5 @@ was started elsewhere (or by `pull --rebase`) is handled the same way.
 
 ## Not done yet
 
-Interactive rebase, light theme, pull request integration, installer packaging.
+Interactive rebase, light theme, pull request integration, code signing (the exe is unsigned, so
+Windows SmartScreen warns about an unknown publisher). The exe needs Git for Windows installed on the computer.
