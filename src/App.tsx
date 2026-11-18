@@ -1065,6 +1065,38 @@ export function App() {
     if (window.confirm(msg)) void act('Discarding', () => git('discard', { files: [f.path], untracked: f.untracked }), { log: false });
   };
 
+  const discardAll = () => {
+    const unstaged = (status?.files ?? []).filter((f) => !f.conflicted && f.worktree !== '.');
+    const untracked = unstaged.filter((f) => f.untracked).length;
+    const modified = unstaged.length - untracked;
+    if (unstaged.length === 0) return;
+    const lines = [
+      modified > 0 ? `• ${modified} changed file${modified === 1 ? '' : 's'} ${modified === 1 ? 'goes' : 'go'} back to how ${modified === 1 ? 'it is' : 'they are'} staged or committed` : '',
+      untracked > 0 ? `• ${untracked} untracked file${untracked === 1 ? ' is' : 's are'} deleted` : '',
+    ].filter(Boolean);
+    setConfirm({
+      title: 'Discard all unstaged changes?',
+      message: `${lines.join('\n')}\n\nStaged changes are kept. This cannot be undone.`,
+      confirm: 'Discard all',
+      onConfirm: () => void act('Discarding', () => git('discardAll'), { ok: 'Discarded all unstaged changes', log: false }),
+    });
+  };
+
+  // Right-click on an unstaged file.
+  const unstagedMenu = (e: React.MouseEvent, f: StatusFile) => {
+    e.preventDefault();
+    setMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Stage file', onClick: () => void act('Staging', () => git('stage', { files: [f.path] }), { log: false }) },
+        { label: f.untracked ? 'Delete file…' : 'Discard changes…', danger: true, onClick: () => discard(f) },
+        { label: '', onClick: () => {}, separator: true },
+        { label: 'Copy file path', onClick: () => void navigator.clipboard.writeText(f.path) },
+      ],
+    });
+  };
+
   /* ---------- conflicts and unfinished operations ---------- */
 
   const operation = status?.operation ?? null;
@@ -1375,6 +1407,8 @@ export function App() {
                 onStageAll={() => void act('Staging', () => git('stageAll'), { log: false })}
                 onUnstageAll={() => void act('Unstaging', () => git('unstageAll'), { log: false })}
                 onDiscard={discard}
+                onDiscardAll={discardAll}
+                onUnstagedMenu={unstagedMenu}
                 onCommit={(message, amend) =>
                   act('Committing', () => git('commit', { message, amend }), {
                     ok: amend ? 'Commit amended' : 'Commit created',

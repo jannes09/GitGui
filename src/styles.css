@@ -458,3 +458,4 @@ body.resizing * { cursor: col-resize !important; }
 }
 .cf-body .notice { font-family: 'Segoe UI', system-ui, sans-serif; }
 .g-scroll:focus, .right:focus { outline: 0; }
+.rp-btns { display: flex; gap: 6px; }
