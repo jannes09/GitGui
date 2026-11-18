@@ -541,15 +541,21 @@ export function App() {
     }
   };
 
-  const removeAccount = async (username: string) => {
-    if (!window.confirm(`Remove ${username} from this list?\n\nThis does not sign you out of GitHub or change any repository.`)) return;
-    try {
-      await call('accountRemove', { username });
-      await loadAccounts();
-    } catch (e) {
-      notifyError((e as Error).message);
-    }
-  };
+  const removeAccount = (username: string) =>
+    setConfirm({
+      title: `Remove ${username}?`,
+      message: 'It is only removed from this list. It does not sign you out of GitHub or change any repository.',
+      confirm: 'Remove',
+      onConfirm: () =>
+        void (async () => {
+          try {
+            await call('accountRemove', { username });
+            await loadAccounts();
+          } catch (e) {
+            notifyError((e as Error).message);
+          }
+        })(),
+    });
 
   // Points this repository (or every repository) at a saved account.
   const switchAccount = async (username: string, scope: 'local' | 'global' = 'local') => {
@@ -836,9 +842,14 @@ export function App() {
     {
       label: 'Drop stash',
       danger: true,
-      onClick: () => {
-        if (window.confirm('Drop this stash? This cannot be undone.')) void act('Dropping stash', () => git('stashDrop', { ref }));
-      },
+      onClick: () =>
+        setConfirm({
+          title: 'Drop this stash?',
+          message: 'The stashed changes are deleted. This cannot be undone.',
+          confirm: 'Drop stash',
+          danger: true,
+          onConfirm: () => void act('Dropping stash', () => git('stashDrop', { ref })),
+        }),
     },
   ];
 
@@ -1009,11 +1020,14 @@ export function App() {
       {
         label: 'Reset current branch here (hard)',
         danger: true,
-        onClick: () => {
-          if (window.confirm(`Hard reset to ${short}? Uncommitted changes will be lost.`)) {
-            void act('Resetting', () => git('reset', { hash, mode: 'hard' }), { undo: { label: `Hard reset to ${short}` } });
-          }
-        },
+        onClick: () =>
+          setConfirm({
+            title: `Hard reset to ${short}?`,
+            message: 'The current branch moves to this commit and uncommitted changes are lost. You can undo the move with Ctrl+Z, but not the lost changes.',
+            confirm: 'Hard reset',
+            danger: true,
+            onConfirm: () => void act('Resetting', () => git('reset', { hash, mode: 'hard' }), { undo: { label: `Hard reset to ${short}` } }),
+          }),
       },
       { label: '', onClick: () => {}, separator: true },
       { label: 'Copy commit SHA', onClick: () => void navigator.clipboard.writeText(hash) },
@@ -1061,8 +1075,14 @@ export function App() {
   /* ---------- working directory ---------- */
 
   const discard = (f: StatusFile) => {
-    const msg = f.untracked ? `Delete the untracked file "${f.path}"? This cannot be undone.` : `Discard all unstaged changes to "${f.path}"? This cannot be undone.`;
-    if (window.confirm(msg)) void act('Discarding', () => git('discard', { files: [f.path], untracked: f.untracked }), { log: false });
+    setConfirm({
+      title: f.untracked ? 'Delete this file?' : 'Discard changes to this file?',
+      message: f.untracked ? 'The untracked file will be deleted. This cannot be undone.' : 'All unstaged changes to the file will be thrown away. This cannot be undone.',
+      detail: f.path,
+      danger: true,
+      confirm: f.untracked ? 'Delete file' : 'Discard changes',
+      onConfirm: () => void act('Discarding', () => git('discard', { files: [f.path], untracked: f.untracked }), { log: false }),
+    });
   };
 
   const discardAll = () => {
@@ -1078,6 +1098,7 @@ export function App() {
       title: 'Discard all unstaged changes?',
       message: `${lines.join('\n')}\n\nStaged changes are kept. This cannot be undone.`,
       confirm: 'Discard all',
+      danger: true,
       onConfirm: () => void act('Discarding', () => git('discardAll'), { ok: 'Discarded all unstaged changes', log: false }),
     });
   };
@@ -1291,7 +1312,11 @@ export function App() {
         onUndo={() => void stepHistory('undo')}
         onRedo={() => void stepHistory('redo')}
         onPull={() => netAct('Pulling', () => git('pull'), { ok: (r) => conflictText('Pull', r) ?? 'Pull complete', undo: { label: 'Pull' } })}
-        onPush={() => netAct('Pushing', () => git('push'), { ok: 'Push complete' })}
+        onPush={() =>
+          netAct('Pushing', () => git<{ published?: string }>('push'), {
+            ok: (r) => ((r as { published?: string } | null)?.published ? `Pushed as the new branch ${(r as { published: string }).published}, which this branch now tracks` : 'Push complete'),
+          })
+        }
         onBranch={() => askBranch()}
         onStash={() => {
           if (!status?.files.length) return notify('Nothing to stash', true);

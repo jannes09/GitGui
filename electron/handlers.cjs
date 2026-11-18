@@ -510,12 +510,28 @@ const handlers = {
   async push({ repo }) {
     assertRepo(repo);
     const upstream = (await run(repo, ['rev-parse', '--abbrev-ref', '@{u}'], { okCodes: [0, 128] }).catch(() => '')).trim();
-    if (upstream) return void (await run(repo, ['push']));
     const branch = (await run(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { okCodes: [0, 1] })).trim();
+    const publish = async (remote) => {
+      await run(repo, ['push', '-u', remote, branch]);
+      return { published: `${remote}/${branch}` };
+    };
+    if (upstream) {
+      try {
+        await run(repo, ['push']);
+        return {};
+      } catch (e) {
+        // A branch created from origin/main tracks origin/main, and git refuses to push it under a
+        // different name. Publish it as its own branch on that remote (and track that) instead of
+        // failing; main itself is never touched.
+        if (!branch || !/upstream branch of your current branch does not match\s+the name/i.test(e.message)) throw e;
+        const remote = (await run(repo, ['config', '--get', `branch.${branch}.remote`], { okCodes: [0, 1] })).trim() || 'origin';
+        return publish(remote);
+      }
+    }
     if (!branch) throw new Error('Cannot push a detached HEAD');
     const remotes = (await run(repo, ['remote'])).split('\n').filter(Boolean);
     if (remotes.length === 0) throw new Error('This repository has no remote to push to');
-    await run(repo, ['push', '-u', remotes.includes('origin') ? 'origin' : remotes[0], branch]);
+    return publish(remotes.includes('origin') ? 'origin' : remotes[0]);
   },
 
   async checkout({ repo, ref, kind }) {

@@ -60,11 +60,16 @@ export interface ConfirmSpec {
   message: string;
   confirm: string;
   onConfirm: () => void;
+  /** something that cannot be undone: red button, and Cancel is what Enter presses */
+  danger?: boolean;
+  /** e.g. a file path, shown in full (wrapped) in a box of its own */
+  detail?: string;
 }
 
 export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: () => void }) {
   const confirmBtn = useRef<HTMLButtonElement>(null);
-  useEffect(() => confirmBtn.current?.focus(), []);
+  const cancelBtn = useRef<HTMLButtonElement>(null);
+  useEffect(() => (spec.danger ? cancelBtn : confirmBtn).current?.focus(), [spec.danger]);
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -78,13 +83,14 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
       >
         <h3>{spec.title}</h3>
         <p className="modal-text">{spec.message}</p>
+        {spec.detail && <code className="modal-detail">{spec.detail}</code>}
         <div className="modal-actions">
-          <button className="btn" onClick={onClose}>
+          <button ref={cancelBtn} className="btn" onClick={onClose}>
             Cancel
           </button>
           <button
             ref={confirmBtn}
-            className="btn primary"
+            className={'btn ' + (spec.danger ? 'destructive' : 'primary')}
             onClick={() => {
               onClose();
               spec.onConfirm();
