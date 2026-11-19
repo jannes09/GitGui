@@ -12,7 +12,7 @@ npm run build    # typecheck + production bundle into dist/
 npm start        # run the built bundle in Electron
 npm run smoke    # headless check that the Electron shell loads
 npm run dist     # build a portable Windows exe: release/GitGui-<version>-x64.exe
-npm run dist:installer   # the same as an installer (GitGui-Setup-<version>.exe)
+npm run dist:installer   # the same as an installer (release/GitGui-Setup-<version>.exe), the better way to run it daily
 npm run icon     # redraw build/icon.png and build/icon.ico (scripts/make-icon.cjs)
 npm test         # backend and parser tests against temporary repos
 ```
@@ -116,6 +116,17 @@ or use "Edit result" to type the final text. "Mark resolved" saves and stages it
 Whole-file Ours / Theirs, and Keep / Delete for modify-delete conflicts and binary files, are offered where block
 merging is not possible. A resolved file can be reopened while the operation is still in progress. A rebase that
 was started elsewhere (or by `pull --rebase`) is handled the same way.
+
+**Icon and splash:** the app icon is a white commit graph on a bright teal-to-blue tile, drawn at every size from the
+vector (the small sizes use heavier lines) so it stays visible on a taskbar; `npm run icon` redraws it. On start a
+small splash window shows a commit graph drawing itself (one branch leaves the main line and merges back) for at least
+1.8 s while the main window loads, then fades out. It is `electron/splash.html`, pure CSS, and follows the system's
+reduced-motion setting. `GITGUI_SPLASH_LOG=1` prints the splash timing and quits, for checking the sequence.
+
+**Portable exe or installer:** the portable exe unpacks the whole app (about 315 MB) into a temp folder every time it
+starts, which takes around 9 s before the splash can appear. The installer (`npm run dist:installer`, per-user, no
+admin rights needed) unpacks once, so the splash shows within half a second. Use the installer for daily use and pin the
+installed shortcut; the portable exe is for carrying the app around.
 
 ## Not done yet
 

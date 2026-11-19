@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>GitGui</title>
+<style>
+  /* The splash shown while the app starts: one branch leaves the main line and merges back, then the name
+     appears. Pure CSS, no scripts. Every keyframe only sets the starting state, so with reduced motion
+     switched on the finished picture is simply shown. */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; -webkit-app-region: drag; }
+  body { font: 13px/1.4 'Segoe UI', system-ui, sans-serif; color: #dfe3ea; transition: opacity 0.2s ease; }
+  body.bye { opacity: 0; }
+
+  .card {
+    position: absolute; inset: 14px; border-radius: 18px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+    background: #15181e; border: 1px solid #262a33; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+    animation: fade 0.3s ease-out backwards;
+  }
+
+  svg { width: 240px; height: 70px; overflow: visible; }
+  .line { fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 1; }
+  .main { stroke: #2dd4bf; animation: draw 0.9s cubic-bezier(0.3, 0.6, 0.3, 1) 0.15s backwards; }
+  .feat { stroke: #a78bfa; animation: draw 0.6s ease-out 0.45s backwards; }
+  .node { fill: #15181e; stroke-width: 3.5; transform-box: fill-box; transform-origin: center; animation: pop 0.35s cubic-bezier(0.3, 1.5, 0.5, 1) backwards; }
+  .t { stroke: #2dd4bf; } .p { stroke: #a78bfa; }
+  .merge { fill: #2dd4bf; stroke: #15181e; }
+
+  .name { font-size: 22px; font-weight: 600; letter-spacing: 0.08em; color: #dfe3ea; animation: rise 0.5s ease-out 0.95s backwards; }
+
+  @keyframes fade { from { opacity: 0; } }
+  @keyframes draw { from { stroke-dashoffset: 1; } }
+  @keyframes pop { from { transform: scale(0); opacity: 0; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+</style>
+</head>
+<body>
+  <div class="card">
+    <svg viewBox="0 0 240 70" aria-hidden="true">
+      <path class="line feat" pathLength="1" d="M80 50 C100 50 100 14 122 14 H134 C152 14 152 50 164 50" />
+      <path class="line main" pathLength="1" d="M10 50 H230" />
+      <circle class="node t" style="animation-delay:0.15s" cx="10" cy="50" r="7" />
+      <circle class="node t" style="animation-delay:0.45s" cx="80" cy="50" r="7" />
+      <circle class="node p" style="animation-delay:0.8s" cx="128" cy="14" r="6.5" />
+      <circle class="node merge" style="animation-delay:0.95s" cx="164" cy="50" r="8" />
+      <circle class="node t" style="animation-delay:1.05s" cx="230" cy="50" r="7" />
+    </svg>
+    <div class="name">GitGui</div>
+  </div>
+</body>
+</html>
