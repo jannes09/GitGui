@@ -13,7 +13,11 @@ import { CommitPanel, StagingPanel } from './components/RightPanel';
 import { Sidebar, type SidebarItem } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
 import { basename, parseTrack, samePath } from './util';
-import { DEFAULT_REFS_W, WIP_HASH, computeGraph } from './graph';
+import { createPrUrl, isSafePrUrl, publishedName } from './pullRequests';
+import { DEFAULT_REFS_W, MAIN_COLOR_BY_GROUP, WIP_HASH, computeGraph, findMainLines } from './graph';
+import { SettingsDialog } from './components/SettingsDialog';
+import { branchGroup, branchMatcher } from './refLabels';
+import { readSettings, writeSettings, type Settings } from './settings';
 import { Icon } from './icons';
 import type {
   AccountProfile,
@@ -22,6 +26,8 @@ import type {
   Commit,
   ConflictOutcome,
   DiffTarget,
+  PullRequest,
+  PullRequestInfo,
   RefsData,
   RepoSnapshot,
   Selection,
@@ -119,7 +125,15 @@ export function App() {
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
   const [accounts, setAccounts] = useState<AccountsData | null>(null);
   const [activeAcct, setActiveAcct] = useState<ActiveAccount | null>(null);
+  const [prInfo, setPrInfo] = useState<PullRequestInfo | null>(null);
+  const lastPr = useRef({ root: '', at: 0, authenticated: false });
   const [acctDialog, setAcctDialog] = useState(false);
+  const [settings, setSettings] = useState<Settings>(readSettings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  useEffect(() => writeSettings(settings), [settings]);
+  const changeSettings = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
   const [acctBusy, setAcctBusy] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>(readRecent);
   const [tabs, setTabs] = useState<RepoTab[]>(readTabs);
@@ -198,6 +212,23 @@ export function App() {
     }
   }, []);
 
+  // Open pull requests of the repository's GitHub / Azure DevOps remote, for the badges. Asking often
+  // is cheap with a login (5000 requests an hour) but not without one (60), so wait longer then.
+  const loadPrs = useCallback(async (root: string, force = false) => {
+    if (!settingsRef.current.prLookups) return;
+    const last = lastPr.current;
+    const wait = last.authenticated ? 20_000 : 120_000;
+    if (!force && last.root === root && Date.now() - last.at < wait) return;
+    lastPr.current = { root, at: Date.now(), authenticated: last.root === root && last.authenticated };
+    try {
+      const info = await call<PullRequestInfo>('pullRequests', { repo: root });
+      lastPr.current.authenticated = !!info.authenticated;
+      if (repoRef.current === root) setPrInfo(info);
+    } catch {
+      /* no badges; everything else works without them */
+    }
+  }, []);
+
   // Reads the status of every tab that is not showing, so their badges stay current.
   const refreshTabs = useCallback(async () => {
     const others = tabsRef.current.filter((t) => !repoRef.current || !samePath(t.root, repoRef.current));
@@ -246,6 +277,7 @@ export function App() {
         refsKey.current = '';
         setRepo(info);
         setActiveAcct(null);
+        setPrInfo(null);
         void loadActive(info.root);
         setRefs(null);
         setStatus(null);
@@ -328,10 +360,37 @@ export function App() {
       if (!root) return;
       void reload(root).catch(() => {});
       void loadActive(root);
+      void loadPrs(root);
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [reload, loadActive, refreshTabs]);
+  }, [reload, loadActive, refreshTabs, loadPrs]);
+
+  // turning the pull request lookups off clears the badges; turning them on fetches them
+  useEffect(() => {
+    if (!settings.prLookups) setPrInfo(null);
+    else if (repoRef.current) void loadPrs(repoRef.current, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.prLookups]);
+
+  // Ctrl+, opens the settings
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === ',') {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // (re)load pull requests when a repository has been read, and when its set of remote branches changes
+  const remoteKey = (refs?.remoteBranches ?? []).map((r) => r.name).join('|');
+  useEffect(() => {
+    if (repo && refs) void loadPrs(repo.root, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo?.root, remoteKey, loadPrs]);
 
   // a tab that was just restored or added gets its badge without waiting for a focus event
   useEffect(() => {
@@ -830,6 +889,45 @@ export function App() {
     return items;
   };
 
+  /* ---------- pull requests ---------- */
+
+  // Open pull requests by the names the graph and sidebar use: a local branch name, or `origin/name`.
+  // A local branch is matched by the name it is published under, and pull requests from forks are left out
+  // because their branch names are not this repository's.
+  const prLabels = useMemo(() => {
+    const out: Record<string, PullRequest> = {};
+    if (!prInfo?.prs.length) return out;
+    const byBranch = new Map(prInfo.prs.filter((p) => !p.fork).map((p) => [p.branch, p]));
+    for (const b of refs?.branches ?? []) {
+      const pr = byBranch.get(publishedName(b.name, b.upstream));
+      if (pr) out[b.name] = pr;
+    }
+    for (const r of refs?.remoteBranches ?? []) {
+      if (prInfo.remote && r.remote !== prInfo.remote) continue;
+      const pr = byBranch.get(r.name.slice(r.name.indexOf('/') + 1));
+      if (pr) out[r.name] = pr;
+    }
+    return out;
+  }, [prInfo, refs]);
+
+  const openUrl = (url: string) => {
+    if (!isSafePrUrl(url)) return notifyError('That address is not on GitHub or Azure DevOps, so it was not opened.');
+    window.open(url, '_blank', 'noopener,noreferrer'); // Electron hands this to the user's browser
+  };
+  const openPr = (pr: PullRequest) => openUrl(pr.url);
+
+  // "Open pull request #N" for a branch that has one, or "Create pull request" for a pushed branch that has none.
+  const prItems = (localIn: string | null, remoteIn: string | null): MenuItem[] => {
+    if (!prInfo?.provider) return [];
+    const local = localIn ?? (remoteIn ? localOf(remoteIn) : null);
+    const remote = remoteIn ?? (localIn ? remoteOf(localIn) : null);
+    const pr = (local && prLabels[local]) || (remote && prLabels[remote]) || null;
+    if (pr) return [{ label: `Open pull request #${pr.number}${pr.draft ? ' (draft)' : ''}…`, onClick: () => openPr(pr) }];
+    const url = remote ? createPrUrl(prInfo, remote.slice(remote.indexOf('/') + 1)) : null;
+    const name = local ?? (remote ? remote.slice(remote.indexOf('/') + 1) : null);
+    return url && name && !/^(main|master)$/.test(name) ? [{ label: `Create pull request for ${name}…`, onClick: () => openUrl(url) }] : [];
+  };
+
   const stashItems = (ref: string): MenuItem[] => [
     {
       label: 'Pop stash',
@@ -896,6 +994,20 @@ export function App() {
     return out;
   }, [refs?.branches]);
 
+  // Which branches count as "main", and which commits are on their first-parent lines.
+  const isMain = useMemo(() => branchMatcher(settings.mainBranches), [settings.mainBranches]);
+  const usesMainLines =
+    settings.laneBold || settings.lanePin || settings.laneBand || settings.boldMessages || settings.fixedColors || settings.laneChips;
+  const mainLines = useMemo(() => {
+    if (!usesMainLines || !refs) return null;
+    const short = (n: string) => n.slice(n.indexOf('/') + 1);
+    const tips = [
+      ...refs.branches.filter((b) => isMain(b.name)).map((b) => ({ name: b.name, hash: b.hash })),
+      ...refs.remoteBranches.filter((r) => isMain(short(r.name))).map((r) => ({ name: short(r.name), hash: r.hash })),
+    ];
+    return findMainLines(commits, tips);
+  }, [usesMainLines, refs, commits, isMain]);
+
   const graph = useMemo(() => {
     const list = [...withStashes];
     if (status && status.files.length > 0) {
@@ -909,8 +1021,18 @@ export function App() {
         subject: '// WIP',
       });
     }
-    return computeGraph(list);
-  }, [withStashes, status, refs?.head]);
+    return computeGraph(list, {
+      main: mainLines?.main,
+      pin: settings.lanePin && mainLines && mainLines.primary.size > 0 ? mainLines.primary : undefined,
+      fixedColors: settings.fixedColors ? (name) => MAIN_COLOR_BY_GROUP[branchGroup(name)] : undefined,
+      remotes: refs?.remotes,
+    });
+  }, [withStashes, status, refs?.head, refs?.remotes, mainLines, settings.lanePin, settings.fixedColors]);
+
+  const look = useMemo(
+    () => ({ bold: settings.laneBold, band: settings.laneBand, boldMessages: settings.boldMessages, chips: settings.laneChips }),
+    [settings.laneBold, settings.laneBand, settings.boldMessages, settings.laneChips],
+  );
 
   const commitSet = useMemo(() => new Set(commits.map((c) => c.hash)), [commits]);
 
@@ -973,10 +1095,24 @@ export function App() {
     for (const r of refs?.remoteBranches ?? []) {
       if (r.hash === hash && !paired.has(r.name)) deleteMenu.push(...deleteItems(null, r.name));
     }
+    // pull requests of the branches here, written next to the branch operations
+    const prMenu: MenuItem[] = [];
+    const seenRemote = new Set<string>();
+    for (const b of refs?.branches ?? []) {
+      if (b.hash !== hash) continue;
+      prMenu.push(...prItems(b.name, null));
+      const r = remoteOf(b.name);
+      if (r) seenRemote.add(r);
+    }
+    for (const r of refs?.remoteBranches ?? []) {
+      if (r.hash === hash && !seenRemote.has(r.name)) prMenu.push(...prItems(null, r.name));
+    }
+    if (prMenu.length) prMenu.push(sep);
     if (deleteMenu.length) deleteMenu.push(sep);
     const items: MenuItem[] = [
       ...branchItems,
       ...mergeItems,
+      ...prMenu,
       ...deleteMenu,
       { label: 'Checkout this commit (detached HEAD)', onClick: () => checkout(hash, 'commit') },
       { label: 'Create branch here…', onClick: () => askBranch(hash) },
@@ -1044,12 +1180,14 @@ export function App() {
         { label: 'Checkout', disabled: isCurrent, onClick: () => checkout(item.name, 'local') },
         { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: isCurrent || !refs?.current, onClick: () => merge(item.name) },
         { label: 'Create branch here…', onClick: () => askBranch(item.name) },
+        ...prItems(item.name, null),
         ...deleteItems(item.name, null),
       );
     } else if (item.kind === 'remote') {
       items.push(
         { label: 'Checkout (track)', onClick: () => checkout(item.name, 'remote') },
         { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: !refs?.current, onClick: () => merge(item.name) },
+        ...prItems(null, item.name),
         ...deleteItems(null, item.name),
       );
     } else if (item.kind === 'stash') {
@@ -1178,6 +1316,28 @@ export function App() {
   // a rebase also runs on a detached HEAD, but that is not something to "get out of"
   const detachedAt = repo && refs && refs.current === null && operation?.kind !== 'rebase' ? refs.head : null;
 
+  // The toolbar shortcut: this branch's pull request, or "Create PR" when it is pushed without one,
+  // or the repository's pull request list otherwise. Hidden for hosts other than GitHub / Azure DevOps.
+  const toolbarPr = (() => {
+    if (!prInfo?.provider) return null;
+    const current = branchName ? prLabels[branchName] : undefined;
+    if (current) {
+      return { label: `PR #${current.number}`, has: true, title: `Open pull request #${current.number}: ${current.title}`, onClick: () => openPr(current) };
+    }
+    const published = branchName ? remoteOf(branchName) : null;
+    const createUrl = published ? createPrUrl(prInfo, published.slice(published.indexOf('/') + 1)) : null;
+    if (createUrl && branchName && !/^(main|master)$/.test(branchName)) {
+      return { label: 'Create PR', has: false, title: `Open a new pull request for ${branchName}`, onClick: () => openUrl(createUrl) };
+    }
+    const list = prInfo.listUrl;
+    return {
+      label: 'PRs',
+      has: false,
+      title: prInfo.error ? `Open the pull request list. Could not check for open pull requests: ${prInfo.error}` : 'Open the repository’s pull requests',
+      onClick: () => list && openUrl(list),
+    };
+  })();
+
   /* ---------- repository tabs ---------- */
 
   const tabBadges = useMemo(
@@ -1284,6 +1444,7 @@ export function App() {
         onContext={tabMenu}
       />
       <Toolbar
+        onSettings={() => setSettingsOpen(true)}
         repoName={repo?.name ?? null}
         branch={repo ? branchName : null}
         ahead={status?.ahead ?? 0}
@@ -1306,7 +1467,14 @@ export function App() {
             : null
         }
         onAccount={accountMenu}
-        onFetch={() => netAct('Fetching', () => git('fetch'), { ok: 'Fetched all remotes' })}
+        onFetch={() =>
+          netAct('Fetching', () => git('fetch'), {
+            ok: () => {
+              if (repoRef.current) void loadPrs(repoRef.current, true); // fetching is also the "refresh" button for pull requests
+              return 'Fetched all remotes';
+            },
+          })
+        }
         undoLabel={undoStack.length ? undoStack[undoStack.length - 1].label : null}
         redoLabel={redoStack.length ? redoStack[redoStack.length - 1].label : null}
         onUndo={() => void stepHistory('undo')}
@@ -1322,6 +1490,7 @@ export function App() {
           if (!status?.files.length) return notify('Nothing to stash', true);
           void act('Stashing', () => git('stashPush'), { ok: 'Changes stashed' });
         }}
+        pr={toolbarPr}
         onPop={() => {
           if (!refs?.stashes.length) return notify('No stashes to pop', true);
           void act('Popping stash', () => git('stashPop', { ref: refs.stashes[0].ref }), {
@@ -1363,7 +1532,7 @@ export function App() {
 
       {repo ? (
         <div className="main" style={{ ['--sb-w' as string]: `${sidebarW}px`, ['--rp-w' as string]: `${rightW}px` }}>
-          <Sidebar refs={refs} onFocus={onSidebarFocus} onActivate={onSidebarActivate} onContext={sidebarMenu} />
+          <Sidebar refs={refs} prs={prLabels} onOpenPr={openPr} onFocus={onSidebarFocus} onActivate={onSidebarActivate} onContext={sidebarMenu} />
           <Splitter
             label="Resize sidebar"
             value={sidebarW}
@@ -1392,6 +1561,8 @@ export function App() {
             ) : (
               <GraphView
                 data={graph}
+                look={look}
+                isMain={isMain}
                 remotes={refs?.remotes ?? []}
                 selected={selectedHash}
                 matches={matchSet}
@@ -1400,6 +1571,8 @@ export function App() {
                 refsW={refsW}
                 onRefsW={setRefsW}
                 tracks={tracks}
+                prs={prLabels}
+                onOpenPr={openPr}
                 onSelect={(hash) => setSel(hash === WIP_HASH ? { kind: 'wip' } : stashByHash.has(hash) ? { kind: 'stash', hash } : { kind: 'commit', hash })}
                 onContext={(e, hash) => commitMenu(e, hash)}
                 onActivate={activateCommit}
@@ -1493,6 +1666,7 @@ export function App() {
           onClose={() => setAcctDialog(false)}
         />
       )}
+      {settingsOpen && <SettingsDialog settings={settings} onChange={changeSettings} onClose={() => setSettingsOpen(false)} />}
       {confirm && <ConfirmDialog spec={confirm} onClose={() => setConfirm(null)} />}
     </div>
   );

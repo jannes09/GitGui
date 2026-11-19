@@ -156,3 +156,28 @@ export interface ConflictOutcome {
   fastForward?: boolean;
   upToDate?: boolean;
 }
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  /** the pull request's page, built by the backend from the repository's address */
+  url: string;
+  /** the branch the pull request comes from */
+  branch: string;
+  target: string;
+  author: string;
+  draft: boolean;
+  /** comes from someone's fork, so its branch name is not one of this repository's branches */
+  fork: boolean;
+}
+/** Open pull requests of the repository's GitHub / Azure DevOps remote; provider is null for other hosts. */
+export interface PullRequestInfo {
+  provider: 'github' | 'azure' | null;
+  remote?: string;
+  name?: string;
+  webUrl?: string;
+  listUrl?: string;
+  prs: PullRequest[];
+  error?: string | null;
+  authenticated?: boolean;
+}

@@ -8,6 +8,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { parseRemoteUrl, parseCredentialOutput, listPullRequests } = require('./pullrequests.cjs');
 
 const ENV = {
   ...process.env,
@@ -26,7 +27,7 @@ const LITERAL_ARGS = ['--literal-pathspecs'];
 function run(repo, args, opts = {}) {
   return new Promise((resolve, reject) => {
     const global = opts.literal === false ? BASE_ARGS : [...LITERAL_ARGS, ...BASE_ARGS];
-    const child = spawn('git', [...global, ...args], { cwd: repo, env: ENV, windowsHide: true });
+    const child = spawn('git', [...global, ...args], { cwd: repo, env: opts.env ? { ...ENV, ...opts.env } : ENV, windowsHide: true });
     const out = [];
     const err = [];
     child.stdout.on('data', (d) => out.push(d));
@@ -262,6 +263,31 @@ async function conflictsOrThrow(repo, error, extra = {}) {
   const [op, files] = await Promise.all([operationState(repo).catch(() => null), unmergedEntries(repo).catch(() => new Map())]);
   if (files.size > 0 && (op || /CONFLICT/i.test(error.message))) return { conflicts: true, files: files.size, ...extra };
   throw error;
+}
+
+// Asks Git Credential Manager (or whatever credential helper git is set up with) for the login it
+// already holds for a host, without ever prompting. Returns null when there is none.
+const tokenCache = new Map();
+const TOKEN_TTL_MS = 2 * 60 * 1000;
+async function credentialToken(repo, info) {
+  const key = `${repo}|${info.credentialHost}|${info.credentialPath || ''}`;
+  const hit = tokenCache.get(key);
+  if (hit && Date.now() - hit.at < TOKEN_TTL_MS) return hit.value;
+  let value = null;
+  try {
+    const lines = ['protocol=https', `host=${info.credentialHost}`];
+    if (info.credentialPath) lines.push(`path=${info.credentialPath}`);
+    const out = await run(repo, ['credential', 'fill'], {
+      input: lines.join('\n') + '\n\n',
+      env: { GCM_INTERACTIVE: 'never' }, // fail instead of opening a sign-in window
+      literal: false,
+    });
+    value = parseCredentialOutput(out);
+  } catch {
+    value = null; // no stored login: public repositories still work without one
+  }
+  tokenCache.set(key, { value, at: Date.now() });
+  return value;
 }
 
 const handlers = {
@@ -711,6 +737,36 @@ const handlers = {
     assertRepo(repo);
     if (!['soft', 'mixed', 'hard'].includes(mode)) throw new Error('Invalid reset mode');
     await run(repo, ['reset', `--${mode}`, safeRef(hash)]);
+  },
+
+  // Open pull requests of this repository's GitHub / Azure DevOps remote (read only). The login is
+  // whatever Git Credential Manager already holds for that host; it is asked for without any prompt,
+  // kept in memory for a couple of minutes, and sent only to the provider's own API.
+  async pullRequests({ repo }) {
+    assertRepo(repo);
+    const remotes = (await run(repo, ['remote', '-v']).catch(() => ''))
+      .split('\n')
+      .map((l) => /^(\S+)\s+(\S+)\s+\(fetch\)$/.exec(l.trim()))
+      .filter(Boolean)
+      .map((m) => ({ name: m[1], url: m[2] }));
+    // origin first, then any other remote that is hosted somewhere we know
+    remotes.sort((a, b) => (a.name === 'origin' ? -1 : 0) - (b.name === 'origin' ? -1 : 0));
+    const found = remotes.map((r) => ({ remote: r.name, info: parseRemoteUrl(r.url) })).find((r) => r.info);
+    if (!found) return { provider: null, prs: [] };
+    const { info, remote } = found;
+
+    const token = await credentialToken(repo, info);
+    const result = await listPullRequests(info, token ? token.token : null);
+    return {
+      provider: info.provider,
+      remote,
+      name: info.name,
+      webUrl: info.webUrl,
+      listUrl: info.listUrl,
+      prs: result.prs,
+      error: result.error || null,
+      authenticated: result.authenticated,
+    };
   },
 
   async accountsList() {

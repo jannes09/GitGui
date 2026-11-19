@@ -1,7 +1,25 @@
 import { useMemo, useState } from 'react';
 import { Icon, type IconName } from '../icons';
-import type { RefsData } from '../types';
+import type { PullRequest, RefsData } from '../types';
 import { parseTrack } from '../util';
+
+/** "#12" next to a branch that has an open pull request; clicking it opens the pull request. */
+function PrBadge({ pr, onOpen }: { pr: PullRequest; onOpen: (pr: PullRequest) => void }) {
+  return (
+    <span
+      className={'sb-pr' + (pr.draft ? ' draft' : '')}
+      role="link"
+      title={`Open pull request #${pr.number}${pr.draft ? ' (draft)' : ''}: ${pr.title}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen(pr);
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      <Icon name="pr" size={11} />#{pr.number}
+    </span>
+  );
+}
 
 export type SidebarItem =
   | { kind: 'branch'; name: string; hash: string }
@@ -11,6 +29,9 @@ export type SidebarItem =
 
 interface Props {
   refs: RefsData | null;
+  /** open pull requests by branch (local name, or `origin/name`) */
+  prs: Record<string, PullRequest>;
+  onOpenPr: (pr: PullRequest) => void;
   onFocus: (item: SidebarItem) => void;
   onActivate: (item: SidebarItem) => void;
   onContext: (e: React.MouseEvent, item: SidebarItem) => void;
@@ -43,7 +64,7 @@ function Section({
   );
 }
 
-export function Sidebar({ refs, onFocus, onActivate, onContext }: Props) {
+export function Sidebar({ refs, prs, onOpenPr, onFocus, onActivate, onContext }: Props) {
   const [filter, setFilter] = useState('');
   const f = filter.trim().toLowerCase();
   const match = (s: string) => !f || s.toLowerCase().includes(f);
@@ -89,6 +110,7 @@ export function Sidebar({ refs, onFocus, onActivate, onContext }: Props) {
               >
                 {b.current ? <Icon name="check" size={13} /> : <span className="sb-gap" />}
                 <span className="sb-name">{b.name}</span>
+                {prs[b.name] && <PrBadge pr={prs[b.name]} onOpen={onOpenPr} />}
                 {behind > 0 && <span className="sb-ab">↓{behind}</span>}
                 {ahead > 0 && <span className="sb-ab">↑{ahead}</span>}
               </div>
@@ -111,6 +133,7 @@ export function Sidebar({ refs, onFocus, onActivate, onContext }: Props) {
                     onContextMenu={(e) => onContext(e, item)}
                   >
                     <span className="sb-name">{r.name.slice(remote.length + 1)}</span>
+                    {prs[r.name] && <PrBadge pr={prs[r.name]} onOpen={onOpenPr} />}
                   </div>
                 );
               })}
