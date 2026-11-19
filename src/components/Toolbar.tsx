@@ -25,6 +25,9 @@ interface Props {
   onBranch: () => void;
   onStash: () => void;
   onPop: () => void;
+  /** shortcut to the pull request page for the current branch; null when the remote is not GitHub / Azure DevOps */
+  pr: { label: string; title: string; onClick: () => void; has: boolean } | null;
+  onSettings: () => void;
 }
 
 function Action({
@@ -101,10 +104,21 @@ export function Toolbar(p: Props) {
         <Action icon="branch" label="Branch" onClick={p.onBranch} disabled={off} />
         <Action icon="stash" label="Stash" onClick={p.onStash} disabled={off} />
         <Action icon="pop" label="Pop" onClick={p.onPop} disabled={off} />
+        {p.pr && (
+          <>
+            <span className="tb-sep" />
+            <span className={p.pr.has ? 'tb-pr-has' : undefined}>
+              <Action icon="pr" label={p.pr.label} title={p.pr.title} onClick={p.pr.onClick} />
+            </span>
+          </>
+        )}
       </div>
 
       <div className="tb-right">
         {p.busy && <span className="tb-busy">{p.busy}…</span>}
+        <button className="tb-gear" onClick={p.onSettings} title="Settings (Ctrl+,)" aria-label="Settings">
+          <Icon name="sliders" size={17} />
+        </button>
         {p.account && (
           <button className={'tb-account' + (p.account.username ? '' : ' unset')} onClick={p.onAccount} title={p.account.title}>
             <Avatar username={p.account.username} size={28} signedIn={p.account.signedIn} className="tb-avatar" />

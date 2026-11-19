@@ -60,6 +60,45 @@ Only github.com over HTTPS is affected; SSH remotes just get the commit identity
 **Resizable panels:** drag the dividers beside the sidebar and the details panel, or the edge of the
 BRANCH / TAG column header. Double-click resets, arrow keys nudge, and widths are remembered.
 
+**Pull requests:** for repositories on GitHub or Azure DevOps (https or ssh remotes) the app looks up the open pull
+requests and shows `#12` on the branch's pill in the graph and in the sidebar (click it to open the pull request in
+your browser). The toolbar gets a shortcut: `PR #12` for the current branch's pull request, `Create PR` for a pushed
+branch that has none, or `PRs` for the repository's list. Right-click a branch for "Open pull request…" /
+"Create pull request…". Drafts are dimmed and pull requests from forks are ignored. Lookups are read only and use the
+login Git Credential Manager already holds for that host (asked for without any prompt, kept in memory for two
+minutes, sent only to `api.github.com` / `dev.azure.com`); without a login only public repositories work. They run
+when a repository opens, after Fetch, and when the window regains focus (at most every 20 s with a login, 2 min
+without). Other hosts simply show no badges.
+
+**Readable branch names:** the BRANCH / TAG column shows the checked-out branch first, then well-known ones
+(`main`, `master`, `dev`, `develop`, `staging`, `production`, `release`, `release/*`), then other local branches,
+remote-only branches and tags, and when space is short it puts the rest behind a `+N` pill instead of squeezing them. Long names keep their distinctive end (`…/Scheduler-rewrite`), the
+remote prefix is dropped when there is only one remote, and hovering a row with shortened pills shows a card with every
+branch and tag in full.
+
+**Settings** (the sliders button in the toolbar, or Ctrl+,) switch each of these on or off; changes apply at once and
+are remembered. They are about *main lanes*, the first-parent history of your main branches (`main`, `master`, `dev`,
+`develop`, `development`, `trunk`, `staging`, `production`, `release`, `release/*` by default; the list is editable
+there too):
+
+1. **Bold main lanes:** main lanes are thicker, with bigger commit dots.
+2. **Pin to the left:** the topmost main branch always sits in the first lane, so it is one straight column that
+   feature branches never push aside (a branch cut from its newest commit joins it instead of taking its place).
+3. **Band and bold text:** a soft band behind the main lanes, only along the main line itself, and commit messages on
+   the main line in bold.
+4. **Colour and labels:** main branches keep a fixed colour (dev teal, main / master gold, other main branches purple),
+   and a branch name chip stays above each main lane while you scroll.
+
+Other branches get colours the way GitKraken does it: each new lane takes a colour that is clearly different from the
+lanes running beside it (so neighbours never look alike until the palette of ten runs out), and the same branch name
+starts from the same colour every time.
+
+Hover over a commit or a lane line in the graph to see which branch it belongs to. The name comes from the branch
+labels on the lane's newest commit, or from a merge message ("Merge branch 'x'", "Merge pull request #1 from user/x");
+lanes of branches that were deleted without such a message have no name.
+
+The settings page also has the switch for the pull request lookups.
+
 **Deleting branches:** right-click a commit (or a branch in the sidebar) to delete a local branch, its copy on the
 remote (`git push --delete`), or both. Deleting the local copy is undoable and git refuses it, with an
 "Delete anyway" prompt, if it has unmerged commits; remote deletion always asks first and cannot be undone.
