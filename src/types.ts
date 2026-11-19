@@ -73,6 +73,8 @@ export interface CommitFile {
   status: string;
   path: string;
   orig?: string;
+  /** the commit whose diff shows this file, when it is not the selected one (a stash's untracked files) */
+  ref?: string;
 }
 export interface CommitDetail {
   hash: string;

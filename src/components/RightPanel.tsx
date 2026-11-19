@@ -115,7 +115,7 @@ export function CommitPanel({ repo, hash, active, onOpen, onError }: CommitPanel
   const [detail, setDetail] = useState<CommitDetail | null>(null);
   const [files, setFiles] = useState<CommitFile[]>([]);
 
-  const targets = useMemo(() => files.map((f): DiffTarget => ({ path: f.path, hash })), [files, hash]);
+  const targets = useMemo(() => files.map((f): DiffTarget => ({ path: f.path, hash: f.ref ?? hash })), [files, hash]);
   useFileNav(targets, active, onOpen);
 
   useEffect(() => {
@@ -165,8 +165,8 @@ export function CommitPanel({ repo, hash, active, onOpen, onError }: CommitPanel
         {files.map((f) => (
           <div
             key={f.path}
-            className={'f-row' + (active && sameTarget(active, { path: f.path, hash }) ? ' active' : '')}
-            onClick={() => onOpen({ path: f.path, hash })}
+            className={'f-row' + (active && sameTarget(active, { path: f.path, hash: f.ref ?? hash }) ? ' active' : '')}
+            onClick={() => onOpen({ path: f.path, hash: f.ref ?? hash })}
           >
             <Badge code={f.status} />
             <FileName path={f.path} />
@@ -195,6 +195,9 @@ interface StagingProps {
   onStageAll: () => void;
   onUnstageAll: () => void;
   onDiscard: (f: StatusFile) => void;
+  onDiscardAll: () => void;
+  /** right-click on an unstaged file */
+  onUnstagedMenu: (e: React.MouseEvent, f: StatusFile) => void;
   onCommit: (message: string, amend: boolean) => Promise<boolean>;
 }
 
@@ -255,9 +258,19 @@ export function StagingPanel(p: StagingProps) {
         <div className="rp-section">
           <span>Unstaged files ({unstaged.length})</span>
           {unstaged.length > 0 && (
-            <button className="btn small" onClick={p.onStageAll} disabled={p.busy}>
-              Stage all changes
-            </button>
+            <span className="rp-btns">
+              <button
+                className="btn small danger"
+                onClick={p.onDiscardAll}
+                disabled={p.busy || conflicts.length > 0}
+                title={conflicts.length > 0 ? 'Resolve the conflicts first' : 'Throw away every unstaged change'}
+              >
+                Discard all
+              </button>
+              <button className="btn small" onClick={p.onStageAll} disabled={p.busy}>
+                Stage all changes
+              </button>
+            </span>
           )}
         </div>
         {unstaged.length === 0 && <div className="rp-none">Working tree clean</div>}
@@ -266,6 +279,7 @@ export function StagingPanel(p: StagingProps) {
             key={'u' + f.path}
             className={'f-row' + (isActive({ path: f.path }) ? ' active' : '')}
             onClick={() => p.onOpen({ path: f.path, untracked: f.untracked })}
+            onContextMenu={(e) => p.onUnstagedMenu(e, f)}
           >
             <Badge code={f.worktree} />
             <FileName path={f.path} />

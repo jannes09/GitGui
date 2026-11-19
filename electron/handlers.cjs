@@ -384,18 +384,37 @@ const handlers = {
 
   async commitFiles({ repo, hash }) {
     assertRepo(repo);
-    const out = await run(repo, ['show', '--no-color', '--format=', '-m', '--first-parent', '--name-status', '-z', safeRef(hash)]);
-    const tokens = out.replace(/^\n+/, '').split('\0');
-    const files = [];
-    for (let i = 0; i < tokens.length; i++) {
-      const status = tokens[i];
-      if (!status) continue;
-      if (status[0] === 'R' || status[0] === 'C') {
-        files.push({ status: status[0], orig: tokens[i + 1], path: tokens[i + 2] });
-        i += 2;
-      } else {
-        files.push({ status: status[0], path: tokens[i + 1] });
-        i += 1;
+    const nameStatus = async (ref) => {
+      const out = await run(repo, ['show', '--no-color', '--format=', '-m', '--first-parent', '--name-status', '-z', ref]);
+      const tokens = out.replace(/^\n+/, '').split('\0');
+      const list = [];
+      for (let i = 0; i < tokens.length; i++) {
+        const status = tokens[i];
+        if (!status) continue;
+        if (status[0] === 'R' || status[0] === 'C') {
+          list.push({ status: status[0], orig: tokens[i + 1], path: tokens[i + 2] });
+          i += 2;
+        } else {
+          list.push({ status: status[0], path: tokens[i + 1] });
+          i += 1;
+        }
+      }
+      return list;
+    };
+    const files = await nameStatus(safeRef(hash));
+
+    // `git stash -u` keeps the untracked (new) files in a separate commit, the stash's third parent,
+    // which `git show` on the stash never lists. Only real stashes get this: an octopus merge also
+    // has a third parent, but that is ordinary history.
+    const stashes = (await run(repo, ['stash', 'list', '--format=%H']).catch(() => '')).split('\n');
+    if (stashes.includes(hash)) {
+      const untracked = (await run(repo, ['rev-parse', '--verify', '-q', `${hash}^3`], { okCodes: [0, 1] })).trim();
+      if (untracked) {
+        const known = new Set(files.map((f) => f.path));
+        for (const f of await nameStatus(untracked)) {
+          // `ref` is the commit to diff this file against, since it is not in the stash commit itself
+          if (!known.has(f.path)) files.push({ ...f, status: 'A', ref: untracked });
+        }
       }
     }
     return files;
@@ -449,6 +468,15 @@ const handlers = {
     if (untracked) await run(repo, ['clean', '-f', '--', ...safeFiles(files)]);
     else await run(repo, ['restore', '--', ...safeFiles(files)]);
   },
+  // Throws away every unstaged change: tracked files go back to what is staged (or committed), and
+  // untracked files are deleted unless `untracked` is false. Staged changes and ignored files are kept.
+  async discardAll({ repo, untracked = true }) {
+    assertRepo(repo);
+    if ((await unmergedEntries(repo)).size > 0) throw new Error('Resolve the conflicted files first.');
+    // `git restore .` fails when nothing is tracked yet, so only run it when there is something to revert
+    if ((await run(repo, ['diff', '--name-only', '-z'])).length > 0) await run(repo, ['restore', '--worktree', '--', '.']);
+    if (untracked) await run(repo, ['clean', '-f', '-d']);
+  },
   async applyPatch({ repo, patch, reverse }) {
     assertRepo(repo);
     if (typeof patch !== 'string' || !patch) throw new Error('Empty patch');
@@ -482,12 +510,28 @@ const handlers = {
   async push({ repo }) {
     assertRepo(repo);
     const upstream = (await run(repo, ['rev-parse', '--abbrev-ref', '@{u}'], { okCodes: [0, 128] }).catch(() => '')).trim();
-    if (upstream) return void (await run(repo, ['push']));
     const branch = (await run(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { okCodes: [0, 1] })).trim();
+    const publish = async (remote) => {
+      await run(repo, ['push', '-u', remote, branch]);
+      return { published: `${remote}/${branch}` };
+    };
+    if (upstream) {
+      try {
+        await run(repo, ['push']);
+        return {};
+      } catch (e) {
+        // A branch created from origin/main tracks origin/main, and git refuses to push it under a
+        // different name. Publish it as its own branch on that remote (and track that) instead of
+        // failing; main itself is never touched.
+        if (!branch || !/upstream branch of your current branch does not match\s+the name/i.test(e.message)) throw e;
+        const remote = (await run(repo, ['config', '--get', `branch.${branch}.remote`], { okCodes: [0, 1] })).trim() || 'origin';
+        return publish(remote);
+      }
+    }
     if (!branch) throw new Error('Cannot push a detached HEAD');
     const remotes = (await run(repo, ['remote'])).split('\n').filter(Boolean);
     if (remotes.length === 0) throw new Error('This repository has no remote to push to');
-    await run(repo, ['push', '-u', remotes.includes('origin') ? 'origin' : remotes[0], branch]);
+    return publish(remotes.includes('origin') ? 'origin' : remotes[0]);
   },
 
   async checkout({ repo, ref, kind }) {
