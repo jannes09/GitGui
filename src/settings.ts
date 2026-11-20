@@ -20,6 +20,12 @@ export interface Settings {
   prLookups: boolean;
   /** which branches count as main branches: names separated by commas, `*` as a wildcard */
   mainBranches: string;
+  /** when the app starts, look in the update folder for a newer build and offer it */
+  updateCheck: boolean;
+  /** the folder holding latest.yml and the installer; empty means the release folder this build was made in */
+  updateFolder: string;
+  /** a version the user chose not to be asked about again at start-up */
+  skippedUpdate: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -31,10 +37,14 @@ export const DEFAULT_SETTINGS: Settings = {
   laneChips: true,
   prLookups: true,
   mainBranches: DEFAULT_MAIN_BRANCHES,
+  updateCheck: true,
+  updateFolder: '',
+  skippedUpdate: '',
 };
 
 export const SETTINGS_KEY = 'gitgui.settings';
-const MAX_LIST = 400;
+/** longest accepted value of each text setting */
+const MAX_TEXT: Partial<Record<keyof Settings, number>> = { mainBranches: 400, updateFolder: 400, skippedUpdate: 20 };
 
 /** Reads stored settings, ignoring anything that is not the right type so a hand-edited value cannot break the app. */
 export function parseSettings(raw: string | null): Settings {
@@ -49,10 +59,11 @@ export function parseSettings(raw: string | null): Settings {
   if (!v || typeof v !== 'object') return out;
   const o = v as Record<string, unknown>;
   for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
-    if (key === 'mainBranches') {
-      if (typeof o.mainBranches === 'string') out.mainBranches = o.mainBranches.slice(0, MAX_LIST);
+    const limit = MAX_TEXT[key];
+    if (limit !== undefined) {
+      if (typeof o[key] === 'string') (out[key] as string) = (o[key] as string).slice(0, limit);
     } else if (typeof o[key] === 'boolean') {
-      out[key] = o[key] as boolean;
+      (out[key] as boolean) = o[key] as boolean;
     }
   }
   return out;

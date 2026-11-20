@@ -29,6 +29,25 @@ test('an absurdly long branch list is cut', () => {
   assert.equal(parseSettings(JSON.stringify({ mainBranches: 'a'.repeat(5000) })).mainBranches.length, 400);
 });
 
+test('the update settings default to checking at start-up, in the default folder, skipping nothing', () => {
+  assert.equal(DEFAULT_SETTINGS.updateCheck, true);
+  assert.equal(DEFAULT_SETTINGS.updateFolder, '');
+  assert.equal(DEFAULT_SETTINGS.skippedUpdate, '');
+});
+
+test('the update settings are read back, and text of the wrong type or length is not trusted', () => {
+  const s = parseSettings(JSON.stringify({ updateCheck: false, updateFolder: 'D:\\Builds\\release', skippedUpdate: '0.3.0' }));
+  assert.equal(s.updateCheck, false);
+  assert.equal(s.updateFolder, 'D:\\Builds\\release');
+  assert.equal(s.skippedUpdate, '0.3.0');
+  const bad = parseSettings(JSON.stringify({ updateCheck: 'no', updateFolder: 5, skippedUpdate: { v: 1 } }));
+  assert.equal(bad.updateCheck, true);
+  assert.equal(bad.updateFolder, '');
+  assert.equal(bad.skippedUpdate, '');
+  assert.equal(parseSettings(JSON.stringify({ updateFolder: 'x'.repeat(5000) })).updateFolder.length, 400);
+  assert.equal(parseSettings(JSON.stringify({ skippedUpdate: '1'.repeat(99) })).skippedUpdate.length, 20);
+});
+
 test('the branch list matches whole names, ignoring case, with * as a wildcard', () => {
   const isMain = branchMatcher(DEFAULT_MAIN_BRANCHES);
   for (const name of ['main', 'master', 'dev', 'Develop', 'DEVELOPMENT', 'trunk', 'staging', 'production', 'release', 'release/2.4']) {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { call, isElectron, pickFolder } from './api';
+import { call, installUpdate, isElectron, pickFolder } from './api';
 import { ConflictView } from './components/ConflictView';
 import { DetachedBanner } from './components/DetachedBanner';
 import { OperationBanner } from './components/OperationBanner';
@@ -17,6 +17,7 @@ import { basename, parseTrack, samePath } from './util';
 import { createPrUrl, isSafePrUrl, publishedName } from './pullRequests';
 import { DEFAULT_REFS_W, MAIN_COLOR_BY_GROUP, WIP_HASH, computeGraph, findMainLines } from './graph';
 import { SettingsDialog } from './components/SettingsDialog';
+import { UpdateDialog } from './components/UpdateDialog';
 import { branchGroup, branchMatcher } from './refLabels';
 import { readSettings, writeSettings, type Settings } from './settings';
 import { Icon } from './icons';
@@ -38,6 +39,7 @@ import type {
   StatusData,
   StatusFile,
   UndoOp,
+  UpdateInfo,
 } from './types';
 
 const LAST_REPO_KEY = 'gitgui.lastRepo';
@@ -187,6 +189,39 @@ export function App() {
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  /* ---------- updates: a newer build of the app in a local folder ---------- */
+
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updatePrompt, setUpdatePrompt] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  // At start-up (manual = false) this says nothing unless a newer version that was not skipped is waiting.
+  const checkForUpdate = useCallback(
+    async (manual: boolean) => {
+      setCheckingUpdate(true);
+      try {
+        const info = await call<UpdateInfo>('checkUpdate', { folder: settingsRef.current.updateFolder });
+        setUpdate(info);
+        if (info.available && (manual || info.latest !== settingsRef.current.skippedUpdate)) setUpdatePrompt(true);
+      } catch (e) {
+        if (manual) notifyError(`Could not check for updates: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setCheckingUpdate(false);
+      }
+    },
+    [notifyError],
+  );
+  useEffect(() => {
+    if (settingsRef.current.updateCheck) void checkForUpdate(false);
+  }, [checkForUpdate]);
+
+  const skipUpdate = useCallback(() => {
+    setUpdatePrompt(false);
+    if (!update?.latest) return;
+    changeSettings({ skippedUpdate: update.latest });
+    notify(`Version ${update.latest} will not be offered again at start-up. Settings → Updates still finds it.`);
+  }, [update, changeSettings, notify]);
 
   /* ---------- loading ---------- */
 
@@ -1754,7 +1789,24 @@ export function App() {
           onClose={() => setAcctDialog(false)}
         />
       )}
-      {settingsOpen && <SettingsDialog settings={settings} onChange={changeSettings} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          settings={settings}
+          onChange={changeSettings}
+          onClose={() => setSettingsOpen(false)}
+          update={update}
+          checkingUpdate={checkingUpdate}
+          onCheckUpdate={() => void checkForUpdate(true)}
+        />
+      )}
+      {updatePrompt && update?.available && update.latest && (
+        <UpdateDialog
+          info={update}
+          onInstall={() => installUpdate(update.folder ?? '', update.latest!)}
+          onLater={() => setUpdatePrompt(false)}
+          onSkip={skipUpdate}
+        />
+      )}
       {confirm && <ConfirmDialog spec={confirm} onClose={() => setConfirm(null)} />}
     </div>
   );

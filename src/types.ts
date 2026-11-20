@@ -132,6 +132,20 @@ export interface RewordResult {
   map: Record<string, string>;
 }
 
+/** What the update folder holds, compared with the running app. `error` is set when it could not be read. */
+export interface UpdateInfo {
+  current: string;
+  /** the folder that was looked in; null when none is set and there is no default */
+  folder: string | null;
+  /** the version of the installer in the folder */
+  latest: string | null;
+  available: boolean;
+  size: number | null;
+  /** ISO time the installer was built */
+  releaseDate: string | null;
+  error: string | null;
+}
+
 export interface RepoSnapshot {
   head: { branch: string | null; hash: string | null };
   branches: Record<string, string>;

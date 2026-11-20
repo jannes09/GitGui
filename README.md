@@ -23,6 +23,7 @@ Backend changes (`electron/handlers.cjs`) are only picked up after restarting `n
 
 - `electron/handlers.cjs` – every git operation (the only place that spawns git)
 - `electron/main.cjs`, `preload.cjs` – window and the IPC bridge
+- `electron/updates.cjs` – finds and verifies a newer build in a local folder
 - `src/graph.ts` – lane assignment for the commit graph
 - `src/components/` – toolbar, sidebar, graph, diff view, commit/staging panel
 
@@ -138,6 +139,18 @@ reduced-motion setting. `GITGUI_SPLASH_LOG=1` prints the splash timing and quits
 starts, which takes around 9 s before the splash can appear. The installer (`npm run dist:installer`, per-user, no
 admin rights needed) unpacks once, so the splash shows within half a second. Use the installer for daily use and pin the
 installed shortcut; the portable exe is for carrying the app around.
+
+**Updates from a local folder:** when GitGui starts it looks in a folder on this computer for a newer build and, if there
+is one, asks whether to install it (Install and restart, Later, or Skip this version). Nothing is downloaded and nothing
+leaves the computer. The folder is the one `npm run dist` / `dist:installer` write to (`release/`); the build records
+that path, so it works without any setup, and Settings → Updates can point it somewhere else, switch the start-up
+check off, check right now (that ignores a skipped version) or ask about a skipped version again. It reads `latest.yml`
+and the `GitGui-Setup-<version>.exe` it names, and a build counts as newer only when its version number is higher than
+the running app's, so raise `version` in `package.json` (for example `npm version minor --no-git-tag-version`) before
+building a release. Before the installer is started it is checked against the SHA-512 in `latest.yml`, so a damaged or
+half-written file is refused. Installing starts the installer and closes GitGui; the installer keeps your settings and
+repositories and offers to start the new version when it is done. The portable exe and a source checkout cannot be
+replaced in place, so for them the installer is only shown in its folder.
 
 ## Not done yet
 

@@ -1,6 +1,6 @@
 {
   "name": "gitgui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A GitKraken-style Git client",
   "type": "module",
@@ -13,8 +13,8 @@
     "smoke": "node scripts/dev.mjs --smoke",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/",
-    "dist": "npm run build && electron-builder --win portable",
-    "dist:installer": "npm run build && electron-builder --win nsis",
+    "dist": "npm run build && node scripts/build-info.cjs && electron-builder --win portable",
+    "dist:installer": "npm run build && node scripts/build-info.cjs && electron-builder --win nsis",
     "icon": "electron scripts/make-icon.cjs"
   },
   "dependencies": {

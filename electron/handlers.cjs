@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { parseRemoteUrl, parseCredentialOutput, listPullRequests } = require('./pullrequests.cjs');
+const updates = require('./updates.cjs');
 
 const ENV = {
   ...process.env,
@@ -1125,6 +1126,14 @@ const handlers = {
     assertRepo(repo);
     if (!STASH_RE.test(ref || '')) throw new Error('Invalid stash');
     await run(repo, ['stash', 'drop', ref]);
+  },
+
+  // Is a newer build of the app waiting in a local folder? (Installing it is the shell's job, see main.cjs.)
+  async checkUpdate({ folder }) {
+    return updates.check({ folder });
+  },
+  async verifyUpdate({ folder, version }) {
+    return updates.verify({ folder, version });
   },
 };
 
