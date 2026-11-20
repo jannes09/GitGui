@@ -90,9 +90,13 @@ there too):
 4. **Colour and labels:** main branches keep a fixed colour (dev teal, main / master gold, other main branches purple),
    and a branch name chip stays above each main lane while you scroll.
 
-Other branches get colours the way GitKraken does it: each new lane takes a colour that is clearly different from the
-lanes running beside it (so neighbours never look alike until the palette of ten runs out), and the same branch name
-starts from the same colour every time.
+Other lanes get a colour that is clearly different from the lanes running beside it (so neighbours never look alike
+until the palette of ten runs out), and the same branch name starts from the same colour every time. The name that
+counts is the lowest (oldest) branch on the lane: when a branch is stacked on top of another, the whole lane keeps the
+lower branch's colour, so stacking a new branch never recolours the one underneath. The hover label still names the
+branch at the top of the lane. A lane whose commits carry no branch name is coloured from the "Merge branch 'x'"
+message that brought it in, or else takes the next colour in turn. Colours are handed out after the whole loaded
+history has been laid out, so loading more history can recolour a lane that has an older branch name further down.
 
 Hover over a commit or a lane line in the graph to see which branch it belongs to. The name comes from the branch
 labels on the lane's newest commit, or from a merge message ("Merge branch 'x'", "Merge pull request #1 from user/x");
