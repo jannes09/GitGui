@@ -4,7 +4,8 @@ declare global {
   interface Window {
     gitApi?: {
       call: (method: string, args: object) => Promise<Reply>;
-      pickFolder: () => Promise<string | null>;
+      pickFolder: (title?: string) => Promise<string | null>;
+      installUpdate: (folder: string, version: string) => Promise<Reply>;
     };
   }
 }
@@ -28,6 +29,17 @@ export async function call<T = void>(method: string, args: object = {}): Promise
   return reply.data as T;
 }
 
-export async function pickFolder(): Promise<string | null> {
-  return window.gitApi ? window.gitApi.pickFolder() : null;
+export async function pickFolder(title?: string): Promise<string | null> {
+  return window.gitApi ? window.gitApi.pickFolder(title) : null;
+}
+
+/**
+ * Starts the installer of the newer build in the update folder and closes the app so it can be replaced.
+ * `launched` is false when the installer was only shown in its folder (portable exe, or running from source).
+ */
+export async function installUpdate(folder: string, version: string): Promise<{ launched: boolean }> {
+  if (!window.gitApi) throw new Error('Installing an update only works in the desktop app, not in a browser.');
+  const reply = await window.gitApi.installUpdate(folder, version);
+  if (!reply.ok) throw new Error(reply.error);
+  return reply.data as { launched: boolean };
 }

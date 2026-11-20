@@ -5,6 +5,8 @@ export interface MenuItem {
   onClick: () => void;
   danger?: boolean;
   disabled?: boolean;
+  /** tooltip, e.g. why the item is disabled */
+  title?: string;
   separator?: boolean;
 }
 
@@ -42,6 +44,7 @@ export function ContextMenu({ x, y, items, onClose }: { x: number; y: number; it
             key={i}
             className={'ctx-item' + (it.danger ? ' danger' : '')}
             disabled={it.disabled}
+            title={it.title}
             onClick={() => {
               onClose();
               it.onClick();

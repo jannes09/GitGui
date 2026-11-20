@@ -110,6 +110,42 @@ export interface ActiveAccount {
   remotes: { count: number; githubHttps: boolean; githubSsh: boolean };
 }
 
+/** The unpushed commits whose message may be edited; `reason` says why none can be, when that is so for the whole repository. */
+export interface EditableCommits {
+  hashes: string[];
+  reason: string | null;
+}
+
+/** A commit's message split for editing, and what saving it will involve. */
+export interface CommitEditInfo {
+  summary: string;
+  description: string;
+  /** commits after it on the branch that get new ids */
+  later: number;
+  branch: string | null;
+}
+
+export interface RewordResult {
+  /** the edited commit's new id */
+  hash: string;
+  /** every rebuilt commit: old id to new id */
+  map: Record<string, string>;
+}
+
+/** What the update folder holds, compared with the running app. `error` is set when it could not be read. */
+export interface UpdateInfo {
+  current: string;
+  /** the folder that was looked in; null when none is set and there is no default */
+  folder: string | null;
+  /** the version of the installer in the folder */
+  latest: string | null;
+  available: boolean;
+  size: number | null;
+  /** ISO time the installer was built */
+  releaseDate: string | null;
+  error: string | null;
+}
+
 export interface RepoSnapshot {
   head: { branch: string | null; hash: string | null };
   branches: Record<string, string>;
@@ -120,6 +156,8 @@ export interface UndoOp {
   before: RepoSnapshot;
   after: RepoSnapshot;
   mode: 'soft' | 'keep';
+  /** commits this step rebuilt under new ids (old to new), so the selection can follow them through undo and redo */
+  remap?: Record<string, string>;
 }
 
 export type Selection = { kind: 'wip' } | { kind: 'commit'; hash: string } | { kind: 'stash'; hash: string } | null;

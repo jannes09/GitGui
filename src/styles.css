@@ -236,6 +236,8 @@ body.resizing * { cursor: col-resize !important; }
   width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
   background: var(--bg-raised); border: 2px solid var(--accent); font-size: 12px; font-weight: 700;
 }
+.avatar { overflow: hidden; flex: none; }
+.avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .cd-author { font-weight: 600; }
 .cd-date { color: var(--text-dim); font-size: 12px; }
 .cd-hashes { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 14px 10px; color: var(--text-dim); font-size: 12px; }
@@ -495,6 +497,39 @@ body.resizing * { cursor: col-resize !important; }
 }
 /* ---------- settings ---------- */
 .modal.settings { width: 640px; }
+
+/* edit commit message */
+.modal.edit-msg { width: 560px; }
+.modal.edit-msg .field { margin-bottom: 12px; }
+.modal.edit-msg textarea {
+  display: block; width: 100%; min-height: 120px; max-height: 50vh; padding: 7px 10px; resize: vertical;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; outline: 0;
+  font: inherit; color: var(--text); line-height: 1.45;
+}
+.modal.edit-msg textarea:focus { border-color: var(--accent); }
+.edit-msg-hash { margin-left: 6px; font-size: 12px; font-weight: 400; color: var(--text-dim); }
+.modal.edit-msg .modal-text.small { margin: 10px 0 0; }
+
+/* the update prompt and the Updates part of the settings */
+.modal.update { width: 480px; }
+.modal.update .modal-text.small { margin: 0 0 8px; }
+.update-versions { display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px; }
+.update-new { font-size: 26px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.update-arrow { color: var(--text-dim); }
+.update-old { font-size: 15px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.update-label { font-size: 12px; color: var(--text-dim); }
+.update-error { margin: 4px 0 0; padding: 8px 10px; border-radius: 6px; background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.4); color: var(--danger); font-size: 12.5px; line-height: 1.45; word-break: break-word; }
+.modal.update .btn.ghost { margin-right: auto; color: var(--text-dim); }
+.set-version { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.set-folder { display: flex; gap: 8px; }
+.set-folder input { flex: 1; min-width: 0; }
+.set-folder .btn { flex: none; align-self: stretch; }
+.set-status { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text-dim); word-break: break-word; }
+.set-status.ok { color: var(--accent); }
+.set-status.bad { color: var(--danger); }
+.cd-subject-row { display: flex; align-items: flex-start; gap: 6px; }
+.cd-subject-row .cd-subject { flex: 1; min-width: 0; }
+.cd-subject-row .icon-btn { flex: none; margin: 12px 10px 0 0; }
 .set-title { margin: 14px 0 4px; font-size: 12px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-dim); }
 .set-group { margin: 8px 0; padding: 8px 12px 10px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; gap: 6px; }
 .set-name { font-size: 12px; font-weight: 700; color: var(--accent); }

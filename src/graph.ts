@@ -155,18 +155,43 @@ export function mergeSourceName(subject: string, remotes: string[]): string | un
 }
 
 /**
+ * One stretch of one lane: from where it appears to where it joins another lane (or the history ends).
+ * Colours are handed out once the whole graph is laid out, because an ordinary lane is coloured by the
+ * lowest (oldest) branch on it, and that is only known after its last commit has been seen.
+ */
+interface Run {
+  /** palette index; known at once for main lines, filled in afterwards for ordinary lanes */
+  color: number;
+  /** a main line, which has its branch group's signature colour */
+  fixed: boolean;
+  /** the row where it appears, and the row where it ends (Infinity while it is still open) */
+  start: number;
+  end: number;
+  /** the branch named on the lowest commit of the run that has a name */
+  low?: string;
+  /** the branch a merge message names, for a lane none of whose commits carries a branch name */
+  fallback?: string;
+}
+
+/**
  * Assigns every commit a lane and the line segments to draw in its row.
  * Input must be in topological (children before parents) order, which
  * `git log --date-order` guarantees.
+ *
+ * Colours: a main line has its branch group's signature colour. Any other lane is coloured from the name
+ * of the lowest (oldest) branch on it, so stacking a new branch on top of one leaves its colour alone.
+ * Starting from that name's colour, the first one that is clearly different from the lanes running beside
+ * it is taken, and a lane with no branch name at all just takes the next colour in turn.
  */
 export function computeGraph(commits: Commit[], opts: GraphOptions = {}): GraphData {
   const { main, pin, fixedColors } = opts;
   const remotes = opts.remotes ?? [];
   const lanes: (string | null)[] = [];
-  const laneColor: number[] = [];
+  const laneRun: (Run | undefined)[] = [];
   const laneMain: boolean[] = [];
   const laneName: (string | undefined)[] = [];
-  let nextColor = 0;
+  const runs: Run[] = []; // in the order they appear
+  const pending: { target: { color: number }; run: Run }[] = []; // colours to fill in once every run has one
   let maxLanes = 1;
   let hasMain = false;
   const rows: GraphRow[] = [];
@@ -178,34 +203,17 @@ export function computeGraph(commits: Commit[], opts: GraphOptions = {}): GraphD
   const others = LANE_COLORS.map((_, i) => i).filter((i) => !reserved.has(i));
 
   const isMain = (h: string) => !!main && main.has(h);
-  /**
-   * A new lane takes a colour that stands out from the lanes running beside it, so neighbours do not
-   * look alike until the palette runs out. A branch name makes the choice stable: the same branch
-   * starts its search at the same colour every time.
-   */
-  const pickColor = (hint: string | undefined) => {
-    const used: number[] = [];
-    lanes.forEach((h, i) => {
-      if (h !== null) used.push(laneColor[i]);
-    });
-    const start = hint ? hashName(hint) % others.length : nextColor++ % others.length;
-    // the first colour (from a stable starting point) that is clearly different from every lane running beside it;
-    // if none is, the one that comes closest
-    let best = -1;
-    let bestApart = -1;
-    for (let k = 0; k < others.length; k++) {
-      const color = others[(start + k) % others.length];
-      if (used.includes(color)) continue;
-      const apart = used.length ? Math.min(...used.map((u) => colorDistance(color, u))) : Infinity;
-      if (apart >= MIN_APART) return color;
-      if (apart > bestApart) {
-        bestApart = apart;
-        best = color;
-      }
-    }
-    return best >= 0 ? best : others[start % others.length];
+  const newRun = (h: string, start: number, fallback?: string): Run => {
+    const fixed = !!(fixedColors && main && main.has(h));
+    const run: Run = { color: fixed ? fixedColors!(main!.get(h)!) : -1, fixed, start, end: Infinity, fallback };
+    runs.push(run);
+    return run;
   };
-  const colorFor = (h: string, hint: string | undefined) => (fixedColors && main && main.has(h) ? fixedColors(main.get(h)!) : pickColor(hint));
+  /** whatever carries a lane's colour gets it filled in at the end if the lane's colour was not known yet */
+  const colored = <T extends { color: number }>(target: T, run: Run): T => {
+    if (!run.fixed) pending.push({ target, run });
+    return target;
+  };
   const nameHint = (c: Commit | undefined) => (c ? branchNamesOf(c.refsRaw, remotes)[0] : undefined);
   // with a pinned line, lane 0 is reserved for it
   const firstFree = (from: number) => {
@@ -217,6 +225,7 @@ export function computeGraph(commits: Commit[], opts: GraphOptions = {}): GraphD
   const startFor = (h: string) => (pin && !pin.has(h) ? 1 : 0);
 
   for (const c of commits) {
+    const r = rows.length;
     const before = lanes.slice();
     const waiting: number[] = [];
     before.forEach((h, i) => {
@@ -229,14 +238,15 @@ export function computeGraph(commits: Commit[], opts: GraphOptions = {}): GraphD
       before.forEach((h, i) => {
         if (h !== null && laneMain[i] && main.has(h)) {
           if (mainLanes === NO_LANES) mainLanes = [];
-          mainLanes.push({ lane: i, name: main.get(h)!, color: laneColor[i] });
+          const run = laneRun[i]!;
+          mainLanes.push(colored({ lane: i, name: main.get(h)!, color: run.color }, run));
         }
       });
     }
 
     // what the lanes looked like above this row, so the segments entering it keep their old colour and name
     const beforeMain = laneMain.slice();
-    const beforeColor = laneColor.slice();
+    const beforeRun = laneRun.slice();
     const beforeName = laneName.slice();
 
     const own = nameHint(c);
@@ -247,31 +257,46 @@ export function computeGraph(commits: Commit[], opts: GraphOptions = {}): GraphD
       col = 0;
       while (lanes.length === 0) lanes.push(null);
       if (!waiting.includes(0)) {
-        laneColor[0] = colorFor(c.hash, own);
+        laneRun[0] = newRun(c.hash, r);
         laneName[0] = undefined;
       }
     } else if (waiting.length === 0) {
       col = firstFree(startFor(c.hash));
-      laneColor[col] = colorFor(c.hash, own);
+      laneRun[col] = newRun(c.hash, r);
       laneName[col] = undefined;
     } else {
       col = waiting[0];
       // a main commit that lands on an ordinary lane (a feature branch was cut from it) turns it into the main line
-      if (isMain(c.hash) && fixedColors) laneColor[col] = colorFor(c.hash, own);
+      if (isMain(c.hash) && fixedColors) {
+        const now = laneRun[col]!;
+        if (!now.fixed || now.color !== fixedColors(main!.get(c.hash)!)) {
+          now.end = r;
+          laneRun[col] = newRun(c.hash, r);
+        }
+      }
     }
+    const run = laneRun[col]!;
     const onMain = isMain(c.hash);
     if (onMain) hasMain = true;
     laneMain[col] = onMain;
     laneName[col] = onMain ? main!.get(c.hash) : (laneName[col] ?? own);
-    const color = laneColor[col];
+    // the further down the lane, the lower the branch: the last name seen on it is the lowest
+    if (!run.fixed) {
+      const label = (onMain && main!.get(c.hash)) || own;
+      if (label) run.low = label;
+    }
     const segs: Seg[] = [];
 
     before.forEach((h, i) => {
       if (h === null) return;
-      if (h === c.hash) segs.push({ x1: i, y1: 0, x2: col, y2: 0.5, color: beforeColor[i], main: beforeMain[i], name: beforeName[i] });
-      else segs.push({ x1: i, y1: 0, x2: i, y2: 1, color: beforeColor[i], main: beforeMain[i], name: beforeName[i] });
+      const from = beforeRun[i]!;
+      if (h === c.hash) segs.push(colored({ x1: i, y1: 0, x2: col, y2: 0.5, color: from.color, main: beforeMain[i], name: beforeName[i] }, from));
+      else segs.push(colored({ x1: i, y1: 0, x2: i, y2: 1, color: from.color, main: beforeMain[i], name: beforeName[i] }, from));
     });
-    for (const i of waiting) lanes[i] = null;
+    for (const i of waiting) {
+      lanes[i] = null;
+      if (i !== col) laneRun[i]!.end = r; // joins this commit's lane
+    }
 
     c.parents.forEach((p, k) => {
       const existing = lanes.indexOf(p);
@@ -279,37 +304,77 @@ export function computeGraph(commits: Commit[], opts: GraphOptions = {}): GraphD
       // the same parent (a feature branch cut from it). Both lanes then run to that parent and join there.
       const staysStraight = k === 0 && onMain && isMain(p);
       if (existing >= 0 && !staysStraight) {
-        segs.push({ x1: col, y1: 0.5, x2: existing, y2: 1, color: laneColor[existing], main: onMain && isMain(p), name: laneName[existing] });
+        const to = laneRun[existing]!;
+        segs.push(colored({ x1: col, y1: 0.5, x2: existing, y2: 1, color: to.color, main: onMain && isMain(p), name: laneName[existing] }, to));
       } else if (k === 0) {
         lanes[col] = p;
-        segs.push({ x1: col, y1: 0.5, x2: col, y2: 1, color, main: onMain, name: laneName[col] });
+        segs.push(colored({ x1: col, y1: 0.5, x2: col, y2: 1, color: run.color, main: onMain, name: laneName[col] }, run));
       } else {
         const j = firstFree(startFor(p));
         const parent = byHash.get(p);
-        laneColor[j] = colorFor(p, nameHint(parent) ?? mergeSourceName(c.subject, remotes)); // chosen while the lane is still free, so it is not compared with itself
+        const fallback = mergeSourceName(c.subject, remotes);
+        const made = newRun(p, r, fallback);
+        laneRun[j] = made;
         lanes[j] = p;
         laneMain[j] = onMain && isMain(p);
-        laneName[j] = isMain(p) ? main!.get(p) : (nameHint(parent) ?? mergeSourceName(c.subject, remotes));
-        segs.push({ x1: col, y1: 0.5, x2: j, y2: 1, color: laneColor[j], main: laneMain[j], name: laneName[j] });
+        laneName[j] = isMain(p) ? main!.get(p) : (nameHint(parent) ?? fallback);
+        segs.push(colored({ x1: col, y1: 0.5, x2: j, y2: 1, color: made.color, main: laneMain[j], name: laneName[j] }, made));
       }
     });
+    // this commit's lane ended here if it joined another lane, or the history stops, or another lane took its place
+    if (laneRun[col] !== run || lanes[col] == null) run.end = Math.min(run.end, r);
 
     while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
     maxLanes = Math.max(maxLanes, before.length, lanes.length, col + 1);
-    rows.push({
-      commit: c,
-      col,
-      color,
-      segs,
-      merge: c.parents.length > 1,
-      wip: c.hash === WIP_HASH,
-      stash: c.stashRef !== undefined,
-      main: onMain,
-      mainName: main?.get(c.hash),
-      branch: laneName[col],
-      mainLanes,
-    });
+    rows.push(
+      colored(
+        {
+          commit: c,
+          col,
+          color: run.color,
+          segs,
+          merge: c.parents.length > 1,
+          wip: c.hash === WIP_HASH,
+          stash: c.stashRef !== undefined,
+          main: onMain,
+          mainName: main?.get(c.hash),
+          branch: laneName[col],
+          mainLanes,
+        },
+        run,
+      ),
+    );
   }
+
+  // Colour the ordinary lanes, in the order they appeared. A lane takes a colour that stands out from the lanes
+  // running beside it, so neighbours do not look alike until the palette runs out. Its start is the colour of
+  // its branch's name (so the same branch gets the same colour every time); if none stands out, the closest.
+  let nextColor = 0;
+  let active: Run[] = [];
+  for (const run of runs) {
+    active = active.filter((o) => o.end > run.start); // lanes still running where this one begins
+    if (!run.fixed) {
+      const used = active.map((o) => o.color);
+      const hint = run.low ?? run.fallback;
+      const start = hint ? hashName(hint) % others.length : nextColor++ % others.length;
+      let best = -1;
+      let bestApart = -1;
+      let chosen = -1;
+      for (let k = 0; k < others.length && chosen < 0; k++) {
+        const color = others[(start + k) % others.length];
+        if (used.includes(color)) continue;
+        const apart = used.length ? Math.min(...used.map((u) => colorDistance(color, u))) : Infinity;
+        if (apart >= MIN_APART) chosen = color;
+        else if (apart > bestApart) {
+          bestApart = apart;
+          best = color;
+        }
+      }
+      run.color = chosen >= 0 ? chosen : best >= 0 ? best : others[start % others.length];
+    }
+    active.push(run);
+  }
+  for (const { target, run } of pending) target.color = run.color;
   return { rows, maxLanes, hasMain };
 }
 

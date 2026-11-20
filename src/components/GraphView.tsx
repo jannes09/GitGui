@@ -4,6 +4,7 @@ import { Icon } from '../icons';
 import { CHAR_W, fitLabels, labelRank, type FitItem } from '../refLabels';
 import type { PullRequest } from '../types';
 import { initials, relativeDate } from '../util';
+import { useAuthorPicture } from './AuthorPicture';
 import { Splitter } from './Splitter';
 
 /** How the graph emphasises its main lanes; each part can be switched off in the settings. */
@@ -173,6 +174,8 @@ const Row = memo(function Row({ row, look, isMain, onLaneHover, top, graphW, ref
   const labels = useMemo(() => parseRefs(c.refsRaw, remotes), [c.refsRaw, remotes]);
   const cx = x(row.col);
   const cy = ROW_H / 2;
+  // only a plain commit gets an avatar (WIP, stash and merge rows are other shapes), so only it looks a picture up
+  const picture = useAuthorPicture(row.wip || row.stash || row.merge ? undefined : c.email);
 
   // Most important first: the checked-out branch, then local branches, remote-only branches, tags.
   // With a single remote its name is left off (the cloud icon says "remote"), which saves a lot of room.
@@ -311,10 +314,32 @@ const Row = memo(function Row({ row, look, isMain, onLaneHover, top, graphW, ref
             <circle cx={cx} cy={cy} r={look.bold && row.main ? 7 : 5} fill={color} stroke="var(--bg)" strokeWidth={2} />
           ) : (
             <g>
-              <circle cx={cx} cy={cy} r={look.bold && row.main ? 13 : 11} fill="var(--bg-raised)" stroke={color} strokeWidth={look.bold && row.main ? 3.5 : 2.5} />
-              <text x={cx} y={cy + 3.5} textAnchor="middle" fontSize={look.bold && row.main ? 10.5 : 9.5} fontWeight={700} fill="var(--text)">
-                {initials(c.author)}
-              </text>
+              {(() => {
+                const big = look.bold && row.main;
+                const r = big ? 13 : 11;
+                const ring = big ? 3.5 : 2.5;
+                const inner = r - ring / 2; // the picture sits inside the lane-coloured ring
+                return (
+                  <>
+                    <circle cx={cx} cy={cy} r={r} fill="var(--bg-raised)" stroke={color} strokeWidth={ring} />
+                    {picture ? (
+                      <image
+                        href={picture}
+                        x={cx - inner}
+                        y={cy - inner}
+                        width={inner * 2}
+                        height={inner * 2}
+                        preserveAspectRatio="xMidYMid slice"
+                        clipPath="url(#gg-avatar-clip)"
+                      />
+                    ) : (
+                      <text x={cx} y={cy + 3.5} textAnchor="middle" fontSize={big ? 10.5 : 9.5} fontWeight={700} fill="var(--text)">
+                        {initials(c.author)}
+                      </text>
+                    )}
+                  </>
+                );
+              })()}
             </g>
           )}
         </svg>
@@ -417,6 +442,14 @@ export function GraphView({ data, look, isMain, remotes, selected, matches, focu
 
   return (
     <div className="graph" style={{ ['--cols' as string]: cols }}>
+      {/* a circle every row's profile pictures are cut to (sized to the picture, so one definition serves all rows) */}
+      <svg width={0} height={0} style={{ position: 'absolute' }} aria-hidden="true">
+        <defs>
+          <clipPath id="gg-avatar-clip" clipPathUnits="objectBoundingBox">
+            <circle cx={0.5} cy={0.5} r={0.5} />
+          </clipPath>
+        </defs>
+      </svg>
       <div className="g-head" style={{ gridTemplateColumns: cols }}>
         <div className="hc-first">
           BRANCH / TAG

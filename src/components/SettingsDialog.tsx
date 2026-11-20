@@ -1,11 +1,18 @@
 import { useEffect, useRef } from 'react';
+import { isElectron, pickFolder } from '../api';
 import { DEFAULT_MAIN_BRANCHES, DEFAULT_SETTINGS, type Settings } from '../settings';
+import type { UpdateInfo } from '../types';
+import { APP_VERSION } from '../version';
 import { Icon } from '../icons';
 
 interface Props {
   settings: Settings;
   onChange: (patch: Partial<Settings>) => void;
   onClose: () => void;
+  /** the latest look in the update folder, if there was one */
+  update: UpdateInfo | null;
+  checkingUpdate: boolean;
+  onCheckUpdate: () => void;
 }
 
 type FlagKey = { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings];
@@ -23,10 +30,20 @@ function Toggle({ settings, onChange, name, label, hint }: { settings: Settings;
 }
 
 /** All the switches in one place. Changes apply straight away, so the graph behind the dialog shows the effect. */
-export function SettingsDialog({ settings, onChange, onClose }: Props) {
+export function SettingsDialog({ settings, onChange, onClose, update, checkingUpdate, onCheckUpdate }: Props) {
   const close = useRef<HTMLButtonElement>(null);
-  useEffect(() => close.current?.focus(), []);
+  useEffect(() => close.current?.focus({ preventScroll: true }), []); // the dialog opens at its top, not scrolled down to Done
   const t = { settings, onChange };
+
+  const browse = async () => {
+    const dir = await pickFolder('Folder with the newer GitGui installer');
+    if (dir) onChange({ updateFolder: dir });
+  };
+  let status: { text: string; tone: '' | 'ok' | 'bad' } | null = null;
+  if (checkingUpdate) status = { text: 'Looking…', tone: '' };
+  else if (update?.error) status = { text: update.error, tone: 'bad' };
+  else if (update?.available) status = { text: `Version ${update.latest} is available (you have ${update.current}).`, tone: 'ok' };
+  else if (update) status = { text: `You have the newest version, ${update.current}. The folder holds ${update.latest}.`, tone: '' };
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -39,7 +56,9 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
         onKeyDown={(e) => e.key === 'Escape' && onClose()}
       >
         <div className="modal-head">
-          <h3>Settings</h3>
+          <h3>
+            Settings <span className="set-version">GitGui {APP_VERSION}</span>
+          </h3>
           <button className="icon-btn" onClick={onClose} aria-label="Close settings">
             <Icon name="close" size={14} />
           </button>
@@ -96,6 +115,68 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
             label="Look up open pull requests on GitHub and Azure DevOps"
             hint="Read only. Uses the login Git Credential Manager already holds for that host, and only talks to the host's own API. Turn off to stop all lookups; badges and the PR button then disappear."
           />
+        </div>
+
+        <h4 className="set-title">Profile pictures</h4>
+        <div className="set-group">
+          <Toggle
+            {...t}
+            name="profilePictures"
+            label="Show GitHub profile pictures on commits"
+            hint="For authors who commit with a GitHub no-reply address (…@users.noreply.github.com) and for your saved accounts. Only the public username is sent, to github.com. Everyone else keeps their initials."
+          />
+          <Toggle
+            {...t}
+            name="gravatarLookups"
+            label="Also look authors up on Gravatar"
+            hint="Finds a picture for any author who has set one up, but sends a hash of each author's email address to gravatar.com, which can tell which addresses appear in your history. Off unless you switch it on."
+          />
+        </div>
+
+        <h4 className="set-title">Updates</h4>
+        <div className="set-group">
+          <Toggle
+            {...t}
+            name="updateCheck"
+            label="Look for a newer version when GitGui starts, and ask whether to install it"
+            hint="Nothing is downloaded. It only looks at a folder on this computer, by default the release folder this version was built in."
+          />
+          <div className="set-name">Update folder</div>
+          <div className="set-folder">
+            <input
+              className="set-input"
+              value={settings.updateFolder}
+              spellCheck={false}
+              placeholder="Default: the release folder this version was built in"
+              onChange={(e) => onChange({ updateFolder: e.target.value })}
+              aria-label="Update folder"
+            />
+            {isElectron && (
+              <button className="btn" onClick={() => void browse()}>
+                Browse…
+              </button>
+            )}
+          </div>
+          <small className="set-hint">
+            It needs the <code>latest.yml</code> and <code>GitGui-Setup-&lt;version&gt;.exe</code> that <code>npm run dist:installer</code> writes. A build counts as newer when its version number is higher than this one's, so raise{' '}
+            <code>version</code> in <code>package.json</code> before building.
+          </small>
+          <button className="btn" disabled={checkingUpdate} onClick={onCheckUpdate}>
+            Check now
+          </button>
+          {status && (
+            <p className={'set-status' + (status.tone ? ` ${status.tone}` : '')} role="status">
+              {status.text}
+            </p>
+          )}
+          {settings.skippedUpdate && (
+            <small className="set-hint">
+              Version {settings.skippedUpdate} is skipped at start-up.{' '}
+              <button className="link-btn" onClick={() => onChange({ skippedUpdate: '' })}>
+                Ask about it again
+              </button>
+            </small>
+          )}
         </div>
 
         <div className="modal-actions">

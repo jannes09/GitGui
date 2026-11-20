@@ -1,7 +1,10 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const fs = require('node:fs');
 const path = require('node:path');
 const handlers = require('./handlers.cjs');
+const updates = require('./updates.cjs');
+const { splashHtml } = require('./splash-page.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || '';
 
@@ -42,7 +45,9 @@ function createSplash() {
     log('shown');
     splash.show();
   });
-  splash.loadFile(path.join(__dirname, 'splash.html'));
+  // the page has no scripts, so the version is written into it here rather than looked up by the page
+  const html = splashHtml(fs.readFileSync(path.join(__dirname, 'splash.html'), 'utf8'), app.getVersion());
+  splash.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
   return splash;
 }
 
@@ -124,8 +129,9 @@ function createWindow() {
     // `npm run smoke`: prove the window loads and the preload bridge exists, then quit.
     win.webContents.on('did-finish-load', async () => {
       const bridge = await win.webContents.executeJavaScript('typeof window.gitApi?.call');
+      const install = await win.webContents.executeJavaScript('typeof window.gitApi?.installUpdate');
       await whenRevealed; // maximised when it is shown
-      console.log(`SMOKE_RESULT bridge=${bridge} maximized=${win.isMaximized()}`);
+      console.log(`SMOKE_RESULT bridge=${bridge} installUpdate=${install} maximized=${win.isMaximized()}`);
       setTimeout(() => app.quit(), 500);
     });
     win.webContents.on('did-fail-load', (_e, code, desc) => {
@@ -143,11 +149,32 @@ ipcMain.handle('git:call', (event, method, args) => {
   return handlers.call(method, args);
 });
 
-ipcMain.handle('dialog:pickFolder', async (event) => {
+ipcMain.handle('dialog:pickFolder', async (event, title) => {
   if (!isTrusted(event.senderFrame ? event.senderFrame.url : '')) return null;
   const win = BrowserWindow.fromWebContents(event.sender);
-  const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: 'Open repository' });
+  const label = typeof title === 'string' && title.trim() ? title.trim().slice(0, 80) : 'Open repository';
+  const res = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: label });
   return res.canceled ? null : res.filePaths[0];
+});
+
+// Install a newer build found in the update folder: confirm it is intact, start its installer and close this
+// window so the installer can replace the files. The portable exe and a source checkout have nothing to replace
+// in place, so for them the installer is only shown in its folder.
+ipcMain.handle('update:install', async (event, folder, version) => {
+  if (!isTrusted(event.senderFrame ? event.senderFrame.url : '')) return { ok: false, error: 'Untrusted caller' };
+  try {
+    const found = await updates.verify({ folder, version });
+    if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_FILE) {
+      shell.showItemInFolder(found.installer);
+      return { ok: true, data: { launched: false, installer: found.installer } };
+    }
+    const failed = await shell.openPath(found.installer); // "" when it started
+    if (failed) return { ok: false, error: `The installer did not start: ${failed}` };
+    setTimeout(() => app.quit(), 400);
+    return { ok: true, data: { launched: true, installer: found.installer } };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
 });
 
 app.whenReady().then(() => {

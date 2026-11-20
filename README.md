@@ -23,6 +23,7 @@ Backend changes (`electron/handlers.cjs`) are only picked up after restarting `n
 
 - `electron/handlers.cjs` – every git operation (the only place that spawns git)
 - `electron/main.cjs`, `preload.cjs` – window and the IPC bridge
+- `electron/updates.cjs` – finds and verifies a newer build in a local folder
 - `src/graph.ts` – lane assignment for the commit graph
 - `src/components/` – toolbar, sidebar, graph, diff view, commit/staging panel
 
@@ -32,8 +33,8 @@ Commit graph with avatars and branch/tag pills, WIP row, sidebar (local, remote,
 stage / unstage / discard (file and hunk level), commit and amend, fetch / pull / push,
 checkout, create branch / tag, merge, cherry-pick, revert, reset, stash / pop, commit search.
 
-**Undo / redo** (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, plus the toolbar buttons) covers commit, amend, checkout,
-create / delete branch, create tag, merge, pull, cherry-pick, revert and reset. Each action is recorded as a
+**Undo / redo** (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, plus the toolbar buttons) covers commit, amend, edit commit message,
+checkout, create / delete branch, create tag, merge, pull, cherry-pick, revert and reset. Each action is recorded as a
 before/after snapshot of HEAD, local branches and tags. Undo is refused if the repository changed outside the
 app since, or if it would overwrite local edits. Fetch, push, stash and staging are not undoable.
 
@@ -70,6 +71,17 @@ minutes, sent only to `api.github.com` / `dev.azure.com`); without a login only 
 when a repository opens, after Fetch, and when the window regains focus (at most every 20 s with a login, 2 min
 without). Other hosts simply show no badges.
 
+**Author pictures:** the round avatar on a commit in the graph, and the one in the commit details, show the author's
+profile picture when one can be found, and their initials otherwise. A picture is found without asking anyone for an
+email address in two cases: the author committed with a GitHub no-reply address (`12345+name@users.noreply.github.com`,
+what GitHub uses when you keep your email private), or the address is the one of a saved account (so your own commits
+show your picture whatever address they were made with). Only the public username is sent, to `github.com`. Looking
+other authors up on Gravatar is a separate switch in Settings → Profile pictures and is **off** by default, because it
+sends a SHA-256 hash of each author's email address to `gravatar.com`. Pictures are fetched a few at a time, once per
+author, and a lookup that found nothing is repeated after five minutes (the network may have been down). With both
+switches off nothing is requested. Merge commits, WIP and stash rows have no avatar. Pictures from other hosts (for
+example Azure DevOps profiles, which need a sign-in) are not supported.
+
 **Readable branch names:** the BRANCH / TAG column shows the checked-out branch first, then well-known ones
 (`main`, `master`, `dev`, `develop`, `staging`, `production`, `release`, `release/*`), then other local branches,
 remote-only branches and tags, and when space is short it puts the rest behind a `+N` pill instead of squeezing them. Long names keep their distinctive end (`…/Scheduler-rewrite`), the
@@ -89,15 +101,30 @@ there too):
 4. **Colour and labels:** main branches keep a fixed colour (dev teal, main / master gold, other main branches purple),
    and a branch name chip stays above each main lane while you scroll.
 
-Other branches get colours the way GitKraken does it: each new lane takes a colour that is clearly different from the
-lanes running beside it (so neighbours never look alike until the palette of ten runs out), and the same branch name
-starts from the same colour every time.
+Other lanes get a colour that is clearly different from the lanes running beside it (so neighbours never look alike
+until the palette of ten runs out), and the same branch name starts from the same colour every time. The name that
+counts is the lowest (oldest) branch on the lane: when a branch is stacked on top of another, the whole lane keeps the
+lower branch's colour, so stacking a new branch never recolours the one underneath. The hover label still names the
+branch at the top of the lane. A lane whose commits carry no branch name is coloured from the "Merge branch 'x'"
+message that brought it in, or else takes the next colour in turn. Colours are handed out after the whole loaded
+history has been laid out, so loading more history can recolour a lane that has an older branch name further down.
 
 Hover over a commit or a lane line in the graph to see which branch it belongs to. The name comes from the branch
 labels on the lane's newest commit, or from a merge message ("Merge branch 'x'", "Merge pull request #1 from user/x");
 lanes of branches that were deleted without such a message have no name.
 
 The settings page also has the switch for the pull request lookups.
+
+**Editing commit messages:** right-click a commit and choose "Edit commit message…", or click the pencil beside its
+summary in the details panel, to change its summary and description (Enter in the summary jumps to the description,
+Ctrl+Enter saves). This works for commits that have not been pushed and that only the checked-out branch holds, so
+nothing is left behind with the old message; otherwise the item is greyed out and the tooltip says why (already on a
+remote, also on another branch, tagged, or a merge / rebase is in progress). A message is part of a commit's id, so the
+commit and the commits after it on the branch are rebuilt with new ids. Their files, authors, dates and messages stay
+the same; the edited commit's committer becomes you, as with `git commit --amend`. The working tree and staged changes
+are not touched, nothing can conflict, and Ctrl+Z puts the old commits back. At most 250 later commits are rebuilt
+(about 0.1 s each) and GPG signatures on rebuilt commits are dropped. It is done with `git commit-tree` and one
+`git update-ref`, not a rebase, and commit-msg hooks are not run.
 
 **Deleting branches:** right-click a commit (or a branch in the sidebar) to delete a local branch, its copy on the
 remote (`git push --delete`), or both. Deleting the local copy is undoable and git refuses it, with an
@@ -120,13 +147,30 @@ was started elsewhere (or by `pull --rebase`) is handled the same way.
 **Icon and splash:** the app icon is a white commit graph on a bright teal-to-blue tile, drawn at every size from the
 vector (the small sizes use heavier lines) so it stays visible on a taskbar; `npm run icon` redraws it. On start a
 small splash window shows a commit graph drawing itself (one branch leaves the main line and merges back) for at least
-1.8 s while the main window loads, then fades out. It is `electron/splash.html`, pure CSS, and follows the system's
-reduced-motion setting. `GITGUI_SPLASH_LOG=1` prints the splash timing and quits, for checking the sequence.
+1.8 s while the main window loads, then fades out. The app's version number appears under the name. It is
+`electron/splash.html`, pure CSS (the main process writes the version into it before loading, see `electron/splash-page.cjs`),
+and follows the system's reduced-motion setting. `GITGUI_SPLASH_LOG=1` prints the splash timing and quits, for checking
+the sequence.
+
+**Version number:** shown on the splash and next to the title of the Settings dialog (`GitGui 0.2.0`). It is the
+`version` in `package.json`, so raising it there (see Updates below) changes both after the next build.
 
 **Portable exe or installer:** the portable exe unpacks the whole app (about 315 MB) into a temp folder every time it
 starts, which takes around 9 s before the splash can appear. The installer (`npm run dist:installer`, per-user, no
 admin rights needed) unpacks once, so the splash shows within half a second. Use the installer for daily use and pin the
 installed shortcut; the portable exe is for carrying the app around.
+
+**Updates from a local folder:** when GitGui starts it looks in a folder on this computer for a newer build and, if there
+is one, asks whether to install it (Install and restart, Later, or Skip this version). Nothing is downloaded and nothing
+leaves the computer. The folder is the one `npm run dist` / `dist:installer` write to (`release/`); the build records
+that path, so it works without any setup, and Settings → Updates can point it somewhere else, switch the start-up
+check off, check right now (that ignores a skipped version) or ask about a skipped version again. It reads `latest.yml`
+and the `GitGui-Setup-<version>.exe` it names, and a build counts as newer only when its version number is higher than
+the running app's, so raise `version` in `package.json` (for example `npm version minor --no-git-tag-version`) before
+building a release. Before the installer is started it is checked against the SHA-512 in `latest.yml`, so a damaged or
+half-written file is refused. Installing starts the installer and closes GitGui; the installer keeps your settings and
+repositories and offers to start the new version when it is done. The portable exe and a source checkout cannot be
+replaced in place, so for them the installer is only shown in its folder.
 
 ## Not done yet
 

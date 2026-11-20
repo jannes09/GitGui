@@ -49,7 +49,7 @@ function rpcPlugin(): Plugin {
 // Production builds run from file:// inside Electron, so lock the CSP down.
 function cspPlugin(): Plugin {
   const csp =
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://github.com https://avatars.githubusercontent.com; connect-src 'self'";
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://github.com https://avatars.githubusercontent.com https://gravatar.com https://*.gravatar.com; connect-src 'self'";
   return {
     name: 'csp',
     transformIndexHtml: {
@@ -62,8 +62,12 @@ function cspPlugin(): Plugin {
   };
 }
 
+const pkg = require('./package.json') as { version: string };
+
 export default defineConfig({
   base: './',
+  // the app's version number, shown in Settings (see src/version.ts)
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   plugins: [react(), rpcPlugin(), cspPlugin()],
   server: { host: '127.0.0.1', port: 5173 },
   build: { outDir: 'dist', emptyOutDir: true },

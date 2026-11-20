@@ -6,8 +6,8 @@
 <title>GitGui</title>
 <style>
   /* The splash shown while the app starts: one branch leaves the main line and merges back, then the name
-     appears. Pure CSS, no scripts. Every keyframe only sets the starting state, so with reduced motion
-     switched on the finished picture is simply shown. */
+     and version appear. Pure CSS, no scripts (main.cjs writes the version into the page before loading it).
+     Every keyframe only sets the starting state, so with reduced motion switched on the finished picture is shown. */
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; -webkit-app-region: drag; }
   body { font: 13px/1.4 'Segoe UI', system-ui, sans-serif; color: #dfe3ea; transition: opacity 0.2s ease; }
   body.bye { opacity: 0; }
@@ -27,7 +27,9 @@
   .t { stroke: #2dd4bf; } .p { stroke: #a78bfa; }
   .merge { fill: #2dd4bf; stroke: #15181e; }
 
+  .title { display: flex; flex-direction: column; align-items: center; gap: 5px; }
   .name { font-size: 22px; font-weight: 600; letter-spacing: 0.08em; color: #dfe3ea; animation: rise 0.5s ease-out 0.95s backwards; }
+  .ver { min-height: 17px; font-size: 12px; letter-spacing: 0.05em; color: #8b93a3; font-variant-numeric: tabular-nums; animation: rise 0.5s ease-out 1.2s backwards; }
 
   @keyframes fade { from { opacity: 0; } }
   @keyframes draw { from { stroke-dashoffset: 1; } }
@@ -47,7 +49,10 @@
       <circle class="node merge" style="animation-delay:0.95s" cx="164" cy="50" r="8" />
       <circle class="node t" style="animation-delay:1.05s" cx="230" cy="50" r="7" />
     </svg>
-    <div class="name">GitGui</div>
+    <div class="title">
+      <div class="name">GitGui</div>
+      <div class="ver">{{version}}</div>
+    </div>
   </div>
 </body>
 </html>

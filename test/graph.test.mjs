@@ -234,3 +234,123 @@ test('lanes side by side get colours that are clearly different, not just differ
   assert.equal(colorDistance(2, 2), 0);
   assert.ok(colorDistance(2, 4) > 90, 'orange and blue are clearly different');
 });
+
+// ---- a lane is coloured by the lowest (oldest) branch on it ----
+
+/** the colour of the row of commit `h` */
+const colorOf = (g, h) => g.rows.find((r) => r.commit.hash === h).color;
+// a lone branch: the colour its name gives it when nothing else is around
+const alone = (name) => computeGraph([tip('S2', name, 'S1'), c('S1')]).rows[0].color;
+
+test('stacking a branch on top of another leaves the lane in the lower branch\'s colour', () => {
+  const base = computeGraph([tip('S2', 'feature/base', 'S1'), c('S1', 'D'), c('D')]);
+  const stacked = computeGraph([
+    tip('T2', 'feature/top', 'T1'),
+    c('T1', 'S2'),
+    tip('S2', 'feature/base', 'S1'),
+    c('S1', 'D'),
+    c('D'),
+  ]);
+  const colors = ['T2', 'T1', 'S2', 'S1', 'D'].map((h) => colorOf(stacked, h));
+  assert.equal(new Set(colors).size, 1, 'one lane, one colour from top to bottom');
+  assert.equal(colors[0], colorOf(base, 'S2'), 'the colour the base branch had before anything was stacked on it');
+  assert.equal(colors[0], alone('feature/base'));
+});
+
+test('the name of the branch on top has no say in the colour', () => {
+  const stackedWith = (top) => computeGraph([tip('T2', top, 'T1'), c('T1', 'S2'), tip('S2', 'feature/base', 'S1'), c('S1')]);
+  const expected = alone('feature/base');
+  for (const top of ['feature/top', 'fix/other', 'origin/feature/zzz', 'a', 'feature/JSM/add_telemetry_units_page']) {
+    assert.equal(colorOf(stackedWith(top), 'T2'), expected, top);
+  }
+});
+
+test('with several branches stacked, the lowest one decides', () => {
+  const g = computeGraph([tip('C1', 'c', 'B2'), tip('B2', 'b', 'B1'), tip('B1', 'a', 'A1'), c('A1')]);
+  const expected = alone('a');
+  for (const h of ['C1', 'B2', 'B1', 'A1']) assert.equal(colorOf(g, h), expected, h);
+});
+
+test('a lane keeps one colour in its rows and in the segments drawn through them', () => {
+  const g = computeGraph([tip('T2', 'feature/top', 'T1'), c('T1', 'S2'), tip('S2', 'feature/base', 'S1'), c('S1')]);
+  const lane = alone('feature/base');
+  for (const row of g.rows) {
+    assert.equal(row.color, lane, row.commit.hash);
+    for (const s of row.segs) assert.equal(s.color, lane, `${row.commit.hash} segment`);
+  }
+});
+
+test('a lane with no branch name at all is coloured from the merge message, as before', () => {
+  const merged = computeGraph([{ ...c('M', 'P', 'Q'), subject: "Merge branch 'feature/gone' into dev" }, c('P'), c('Q')]);
+  assert.equal(colorOf(merged, 'Q'), alone('feature/gone'));
+});
+
+test('a branch cut from a commit on another lane keeps its own colour', () => {
+  // dev (main line, fixed colour) and a feature branch cut from D1: the feature lane runs on its own down to D1
+  const list = [tip('F2', 'feature/x', 'F1'), c('F1', 'D1'), tip('D2', 'dev', 'D1'), c('D1', 'D0'), c('D0')];
+  const { main, primary } = findMainLines(list, [{ name: 'dev', hash: 'D2' }]);
+  const g = computeGraph(list, { main, pin: primary, fixedColors: signature });
+  assert.equal(colorOf(g, 'F2'), alone('feature/x'));
+  assert.equal(colorOf(g, 'F1'), alone('feature/x'));
+  assert.equal(colorOf(g, 'D2'), signature('dev'));
+  assert.equal(colorOf(g, 'D1'), signature('dev'), 'where it joins dev the line is dev\'s again');
+});
+
+test('a main line without fixed colours stays in its own colour, whatever older branches sit on it', () => {
+  // dev's first-parent line carries an older release/1.0 label further down
+  const list = [tip('D3', 'dev', 'D2'), c('D2', 'D1'), tip('D1', 'release/1.0', 'D0'), c('D0')];
+  const { main, primary } = findMainLines(list, [{ name: 'dev', hash: 'D3' }]);
+  const g = computeGraph(list, { main, pin: primary });
+  const expected = alone('dev');
+  for (const h of ['D3', 'D2', 'D1', 'D0']) assert.equal(colorOf(g, h), expected, h);
+});
+
+test('stacked lanes next to other lanes still get colours that stand out from them', () => {
+  // two stacks side by side, bases named so their colours would clash: the neighbour rule still applies
+  const names = ['feature/aa/one', 'feature/bb/two', 'feature/cc/three', 'feature/dd/four'];
+  const list = [
+    ...names.map((n, i) => tip(`T${i}`, `top/${n}`, `M${i}`)),
+    ...names.map((n, i) => tip(`M${i}`, n, `B`)),
+    c('B'),
+  ];
+  const g = computeGraph(list);
+  const colors = names.map((_, i) => colorOf(g, `T${i}`));
+  assert.equal(new Set(colors).size, names.length, 'four lanes at once, four colours');
+  for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) assert.ok(colorDistance(colors[i], colors[j]) >= 60);
+});
+
+test('a lane that turns into a main line changes colour where it reaches it', () => {
+  // feature/x is cut from D2; without pinning, its lane carries on as dev's line from D2 downwards
+  const list = [tip('F2', 'feature/x', 'F1'), c('F1', 'D2'), tip('D3', 'dev', 'D2'), c('D2', 'D1'), c('D1')];
+  const { main } = findMainLines(list, [{ name: 'dev', hash: 'D3' }]);
+  const g = computeGraph(list, { main, fixedColors: signature });
+  const feature = alone('feature/x');
+  assert.equal(colorOf(g, 'F2'), feature);
+  assert.equal(colorOf(g, 'F1'), feature);
+  assert.equal(colorOf(g, 'D3'), signature('dev'));
+  assert.equal(colorOf(g, 'D2'), signature('dev'), 'dev\'s signature colour from the commit on dev');
+  assert.equal(colorOf(g, 'D1'), signature('dev'));
+  assert.notEqual(feature, signature('dev'), 'an ordinary lane never borrows a main colour');
+  const d2 = g.rows.find((r) => r.commit.hash === 'D2');
+  const into = d2.segs.find((s) => s.x1 === 0 && s.y1 === 0 && s.x2 === 0 && s.y2 === 0.5);
+  const out = d2.segs.find((s) => s.x1 === 0 && s.y1 === 0.5 && s.x2 === 0 && s.y2 === 1);
+  assert.equal(into.color, feature, 'the line arriving at D2 is still the feature branch\'s');
+  assert.equal(out.color, signature('dev'), 'the line leaving it is dev\'s');
+});
+
+test('a branch name on a commit beats the branch a merge message names', () => {
+  const merge = (subject, qRefs) => computeGraph([{ ...c('M', 'P', 'Q'), subject }, c('P'), { ...c('Q'), refsRaw: qRefs }]);
+  const named = colorOf(merge("Merge branch 'feature/other' into dev", 'feature/real'), 'Q');
+  const plain = colorOf(merge('Merge', 'feature/real'), 'Q');
+  assert.equal(named, plain, 'the merge message is only used when no commit on the lane has a branch name');
+  assert.notEqual(alone('feature/other'), alone('feature/real'), 'the two names really do give different colours');
+});
+
+test('loading older history can recolour a lane when it brings in a lower branch name', () => {
+  // only what is loaded counts: with the older commits the lowest branch on the lane is another one
+  const recent = [tip('N2', 'feature/new', 'N1'), c('N1', 'O1')];
+  const older = [...recent, tip('O1', 'feature/old', 'O0'), c('O0')];
+  assert.notEqual(alone('feature/new'), alone('feature/old'), 'the two names really do give different colours');
+  assert.equal(colorOf(computeGraph(recent), 'N2'), alone('feature/new'));
+  assert.equal(colorOf(computeGraph(older), 'N2'), alone('feature/old'));
+});

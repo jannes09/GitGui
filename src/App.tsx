@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { call, isElectron, pickFolder } from './api';
+import { call, installUpdate, isElectron, pickFolder } from './api';
 import { ConflictView } from './components/ConflictView';
 import { DetachedBanner } from './components/DetachedBanner';
 import { OperationBanner } from './components/OperationBanner';
@@ -8,6 +8,7 @@ import { DiffView } from './components/DiffView';
 import { GraphView } from './components/GraphView';
 import { Splitter } from './components/Splitter';
 import { AccountsDialog } from './components/AccountsDialog';
+import { EditMessageDialog, type EditMessageSpec } from './components/EditMessageDialog';
 import { ConfirmDialog, ContextMenu, PromptDialog, type ConfirmSpec, type MenuItem, type PromptSpec } from './components/Overlays';
 import { CommitPanel, StagingPanel } from './components/RightPanel';
 import { Sidebar, type SidebarItem } from './components/Sidebar';
@@ -15,7 +16,10 @@ import { Toolbar } from './components/Toolbar';
 import { basename, parseTrack, samePath } from './util';
 import { createPrUrl, isSafePrUrl, publishedName } from './pullRequests';
 import { DEFAULT_REFS_W, MAIN_COLOR_BY_GROUP, WIP_HASH, computeGraph, findMainLines } from './graph';
+import { PictureSourcesProvider } from './components/AuthorPicture';
 import { SettingsDialog } from './components/SettingsDialog';
+import type { PictureSources } from './avatars';
+import { UpdateDialog } from './components/UpdateDialog';
 import { branchGroup, branchMatcher } from './refLabels';
 import { readSettings, writeSettings, type Settings } from './settings';
 import { Icon } from './icons';
@@ -24,16 +28,20 @@ import type {
   AccountsData,
   ActiveAccount,
   Commit,
+  CommitEditInfo,
   ConflictOutcome,
   DiffTarget,
+  EditableCommits,
   PullRequest,
   PullRequestInfo,
   RefsData,
   RepoSnapshot,
+  RewordResult,
   Selection,
   StatusData,
   StatusFile,
   UndoOp,
+  UpdateInfo,
 } from './types';
 
 const LAST_REPO_KEY = 'gitgui.lastRepo';
@@ -41,6 +49,8 @@ const RECENT_KEY = 'gitgui.recent';
 const TABS_KEY = 'gitgui.tabs';
 const PAGE = 1000;
 const MAX_HISTORY = 50;
+
+const NO_HASHES = new Set<string>();
 
 const SIDEBAR = { key: 'gitgui.sidebarWidth', def: 250, min: 180, max: 480 };
 const RIGHT = { key: 'gitgui.rightWidth', def: 380, min: 300, max: 640 };
@@ -112,6 +122,8 @@ export function App() {
   const [refs, setRefs] = useState<RefsData | null>(null);
   const [status, setStatus] = useState<StatusData | null>(null);
   const [commits, setCommits] = useState<Commit[]>([]);
+  const [editable, setEditable] = useState<Set<string>>(NO_HASHES); // unpushed commits whose message can be edited
+  const [editMsg, setEditMsg] = useState<EditMessageSpec | null>(null);
   const [limit, setLimit] = useState(PAGE);
   const [sel, setSel] = useState<Selection>(null);
   const [diff, setDiff] = useState<DiffTarget | null>(null);
@@ -134,6 +146,12 @@ export function App() {
   settingsRef.current = settings;
   useEffect(() => writeSettings(settings), [settings]);
   const changeSettings = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
+  // which profile picture sources are on; the saved accounts let a user's own commits show their picture
+  const pictureAccounts = accounts?.profiles;
+  const pictureSources = useMemo<PictureSources>(
+    () => ({ github: settings.profilePictures, gravatar: settings.gravatarLookups, accounts: pictureAccounts ?? [] }),
+    [settings.profilePictures, settings.gravatarLookups, pictureAccounts],
+  );
   const [acctBusy, setAcctBusy] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>(readRecent);
   const [tabs, setTabs] = useState<RepoTab[]>(readTabs);
@@ -180,6 +198,39 @@ export function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  /* ---------- updates: a newer build of the app in a local folder ---------- */
+
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updatePrompt, setUpdatePrompt] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  // At start-up (manual = false) this says nothing unless a newer version that was not skipped is waiting.
+  const checkForUpdate = useCallback(
+    async (manual: boolean) => {
+      setCheckingUpdate(true);
+      try {
+        const info = await call<UpdateInfo>('checkUpdate', { folder: settingsRef.current.updateFolder });
+        setUpdate(info);
+        if (info.available && (manual || info.latest !== settingsRef.current.skippedUpdate)) setUpdatePrompt(true);
+      } catch (e) {
+        if (manual) notifyError(`Could not check for updates: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setCheckingUpdate(false);
+      }
+    },
+    [notifyError],
+  );
+  useEffect(() => {
+    if (settingsRef.current.updateCheck) void checkForUpdate(false);
+  }, [checkForUpdate]);
+
+  const skipUpdate = useCallback(() => {
+    setUpdatePrompt(false);
+    if (!update?.latest) return;
+    changeSettings({ skippedUpdate: update.latest });
+    notify(`Version ${update.latest} will not be offered again at start-up. Settings → Updates still finds it.`);
+  }, [update, changeSettings, notify]);
+
   /* ---------- loading ---------- */
 
   const reload = useCallback(async (root: string, forceLog = false) => {
@@ -190,8 +241,15 @@ export function App() {
     setStatus(s);
     if (forceLog || key !== refsKey.current) {
       refsKey.current = key;
-      const log = await call<Commit[]>('log', { repo: root, limit: limitRef.current });
-      if (repoRef.current === root) setCommits(log);
+      const [log, ed] = await Promise.all([
+        call<Commit[]>('log', { repo: root, limit: limitRef.current }),
+        // which commits can have their message edited; the app works without this if it fails
+        call<EditableCommits>('editableCommits', { repo: root }).catch(() => null),
+      ]);
+      if (repoRef.current === root) {
+        setCommits(log);
+        setEditable(ed && ed.hashes.length ? new Set(ed.hashes) : NO_HASHES);
+      }
     }
   }, []);
 
@@ -282,6 +340,8 @@ export function App() {
         setRefs(null);
         setStatus(null);
         setCommits([]);
+        setEditable(NO_HASHES);
+        setEditMsg(null);
         setSel(saved?.sel ?? null);
         setDiff(null);
         setQuery('');
@@ -324,6 +384,8 @@ export function App() {
       setRefs(null);
       setStatus(null);
       setCommits([]);
+      setEditable(NO_HASHES);
+      setEditMsg(null);
       setSel(null);
       setDiff(null);
       setUndoStack([]);
@@ -448,7 +510,7 @@ export function App() {
       opts: {
         ok?: string | ((result: unknown) => string);
         log?: boolean;
-        undo?: { label: string; mode?: 'soft' | 'keep' };
+        undo?: { label: string; mode?: 'soft' | 'keep'; remap?: () => Record<string, string> | undefined };
         /** return true when the failure was handled (e.g. by opening a dialog) so no error toast is shown */
         onError?: (message: string) => boolean;
       } = {},
@@ -464,7 +526,7 @@ export function App() {
         if (undo && before?.head.hash) {
           const after = await call<RepoSnapshot>('snapshot', { repo: root }).catch(() => null);
           if (after && JSON.stringify(after) !== JSON.stringify(before)) {
-            const op: UndoOp = { label: undo.label, before, after, mode: undo.mode ?? 'keep' };
+            const op: UndoOp = { label: undo.label, before, after, mode: undo.mode ?? 'keep', remap: undo.remap?.() };
             if (repoRef.current === root) {
               setUndoStack((s) => [...s, op].slice(-MAX_HISTORY));
               setRedoStack([]);
@@ -512,6 +574,11 @@ export function App() {
         } else {
           setRedoStack((s) => s.slice(0, -1));
           setUndoStack((s) => [...s, op]);
+        }
+        if (op.remap) {
+          // commits that were rebuilt have other ids now: keep the selection on the same commit
+          const to = dir === 'undo' ? Object.fromEntries(Object.entries(op.remap).map(([from, now]) => [now, from])) : op.remap;
+          setSel((s) => (s?.kind === 'commit' && to[s.hash] ? { kind: 'commit', hash: to[s.hash] } : s));
         }
         notify(`${dir === 'undo' ? 'Undid' : 'Redid'}: ${op.label}`);
       } catch (e) {
@@ -1058,6 +1125,47 @@ export function App() {
     jumpTo(matchList[next]);
   };
 
+  /* ---------- editing a commit's message ---------- */
+
+  // null when the message of this commit can be edited, otherwise why not (shown as a tooltip)
+  const editBlocked = (hash: string): string | null =>
+    operation
+      ? `Finish or abort the ${operation.kind} first`
+      : editable.has(hash)
+        ? null
+        : 'Only commits that have not been pushed, and are on the checked-out branch only, can be edited';
+
+  const openEditMessage = async (hash: string) => {
+    if (busyRef.current) return;
+    setBusy('Reading commit');
+    try {
+      const info = await git<CommitEditInfo>('commitEditInfo', { hash });
+      setEditMsg({ ...info, hash });
+    } catch (e) {
+      notifyError((e as Error).message); // the backend says exactly why, e.g. which remote already has the commit
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveMessage = async (hash: string, summary: string, description: string) => {
+    let result: RewordResult | null = null;
+    const ok = await act(
+      'Editing message',
+      async () => (result = await git<RewordResult>('rewordCommit', { hash, summary, description })),
+      { ok: 'Commit message updated', undo: { label: 'Edit commit message', mode: 'keep', remap: () => (result as RewordResult | null)?.map } },
+    );
+    const made = result as RewordResult | null;
+    if (!ok || !made) return;
+    // the commit and the ones after it have new ids: keep the selection on the same commit
+    const current = selRef.current;
+    if (current?.kind === 'commit' && made.map[current.hash]) {
+      const next = made.map[current.hash];
+      setSel({ kind: 'commit', hash: next });
+      if (current.hash === hash) focusHash(next);
+    }
+  };
+
   /* ---------- context menus ---------- */
 
   const commitMenu = (e: React.MouseEvent, hash: string) => {
@@ -1126,6 +1234,13 @@ export function App() {
             onSubmit: (name) =>
               void act('Tagging', () => git('createTag', { name, hash }), { ok: `Created tag ${name}`, undo: { label: `Create tag ${name}` } }),
           }),
+      },
+      { label: '', onClick: () => {}, separator: true },
+      {
+        label: 'Edit commit message…',
+        disabled: editBlocked(hash) !== null,
+        title: editBlocked(hash) ?? undefined,
+        onClick: () => void openEditMessage(hash),
       },
       { label: '', onClick: () => {}, separator: true },
       {
@@ -1431,6 +1546,7 @@ export function App() {
   };
 
   return (
+    <PictureSourcesProvider value={pictureSources}>
     <div className="app">
       <RepoTabs
         tabs={tabs}
@@ -1615,7 +1731,16 @@ export function App() {
                 }
               />
             ) : sel && sel.kind !== 'wip' ? (
-              <CommitPanel key={sel.hash} repo={repo.root} hash={sel.hash} active={diff} onOpen={setDiff} onError={notifyError} />
+              <CommitPanel
+                key={sel.hash}
+                repo={repo.root}
+                hash={sel.hash}
+                active={diff}
+                onOpen={setDiff}
+                onError={notifyError}
+                onEdit={sel.kind === 'commit' ? () => void openEditMessage(sel.hash) : undefined}
+                editBlocked={editBlocked(sel.hash)}
+              />
             ) : (
               <div className="rp-empty">Select a commit to see its details</div>
             )}
@@ -1653,6 +1778,13 @@ export function App() {
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {prompt && <PromptDialog spec={prompt} onClose={() => setPrompt(null)} />}
+      {editMsg && (
+        <EditMessageDialog
+          spec={editMsg}
+          onClose={() => setEditMsg(null)}
+          onSave={(summary, description) => void saveMessage(editMsg.hash, summary, description)}
+        />
+      )}
       {acctDialog && accounts && (
         <AccountsDialog
           data={accounts}
@@ -1666,8 +1798,26 @@ export function App() {
           onClose={() => setAcctDialog(false)}
         />
       )}
-      {settingsOpen && <SettingsDialog settings={settings} onChange={changeSettings} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          settings={settings}
+          onChange={changeSettings}
+          onClose={() => setSettingsOpen(false)}
+          update={update}
+          checkingUpdate={checkingUpdate}
+          onCheckUpdate={() => void checkForUpdate(true)}
+        />
+      )}
+      {updatePrompt && update?.available && update.latest && (
+        <UpdateDialog
+          info={update}
+          onInstall={() => installUpdate(update.folder ?? '', update.latest!)}
+          onLater={() => setUpdatePrompt(false)}
+          onSkip={skipUpdate}
+        />
+      )}
       {confirm && <ConfirmDialog spec={confirm} onClose={() => setConfirm(null)} />}
     </div>
+    </PictureSourcesProvider>
   );
 }
