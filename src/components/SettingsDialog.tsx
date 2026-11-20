@@ -117,6 +117,22 @@ export function SettingsDialog({ settings, onChange, onClose, update, checkingUp
           />
         </div>
 
+        <h4 className="set-title">Profile pictures</h4>
+        <div className="set-group">
+          <Toggle
+            {...t}
+            name="profilePictures"
+            label="Show GitHub profile pictures on commits"
+            hint="For authors who commit with a GitHub no-reply address (…@users.noreply.github.com) and for your saved accounts. Only the public username is sent, to github.com. Everyone else keeps their initials."
+          />
+          <Toggle
+            {...t}
+            name="gravatarLookups"
+            label="Also look authors up on Gravatar"
+            hint="Finds a picture for any author who has set one up, but sends a hash of each author's email address to gravatar.com, which can tell which addresses appear in your history. Off unless you switch it on."
+          />
+        </div>
+
         <h4 className="set-title">Updates</h4>
         <div className="set-group">
           <Toggle

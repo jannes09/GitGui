@@ -29,6 +29,15 @@ test('an absurdly long branch list is cut', () => {
   assert.equal(parseSettings(JSON.stringify({ mainBranches: 'a'.repeat(5000) })).mainBranches.length, 400);
 });
 
+test('profile pictures: GitHub on by default, Gravatar (which sends email hashes) off until switched on', () => {
+  assert.equal(DEFAULT_SETTINGS.profilePictures, true);
+  assert.equal(DEFAULT_SETTINGS.gravatarLookups, false);
+  const s = parseSettings(JSON.stringify({ gravatarLookups: true, profilePictures: false }));
+  assert.equal(s.gravatarLookups, true);
+  assert.equal(s.profilePictures, false);
+  assert.equal(parseSettings(JSON.stringify({ gravatarLookups: 'yes' })).gravatarLookups, false, 'a value of the wrong type cannot switch it on');
+});
+
 test('the update settings default to checking at start-up, in the default folder, skipping nothing', () => {
   assert.equal(DEFAULT_SETTINGS.updateCheck, true);
   assert.equal(DEFAULT_SETTINGS.updateFolder, '');

@@ -71,6 +71,17 @@ minutes, sent only to `api.github.com` / `dev.azure.com`); without a login only 
 when a repository opens, after Fetch, and when the window regains focus (at most every 20 s with a login, 2 min
 without). Other hosts simply show no badges.
 
+**Author pictures:** the round avatar on a commit in the graph, and the one in the commit details, show the author's
+profile picture when one can be found, and their initials otherwise. A picture is found without asking anyone for an
+email address in two cases: the author committed with a GitHub no-reply address (`12345+name@users.noreply.github.com`,
+what GitHub uses when you keep your email private), or the address is the one of a saved account (so your own commits
+show your picture whatever address they were made with). Only the public username is sent, to `github.com`. Looking
+other authors up on Gravatar is a separate switch in Settings → Profile pictures and is **off** by default, because it
+sends a SHA-256 hash of each author's email address to `gravatar.com`. Pictures are fetched a few at a time, once per
+author, and a lookup that found nothing is repeated after five minutes (the network may have been down). With both
+switches off nothing is requested. Merge commits, WIP and stash rows have no avatar. Pictures from other hosts (for
+example Azure DevOps profiles, which need a sign-in) are not supported.
+
 **Readable branch names:** the BRANCH / TAG column shows the checked-out branch first, then well-known ones
 (`main`, `master`, `dev`, `develop`, `staging`, `production`, `release`, `release/*`), then other local branches,
 remote-only branches and tags, and when space is short it puts the rest behind a `+N` pill instead of squeezing them. Long names keep their distinctive end (`…/Scheduler-rewrite`), the

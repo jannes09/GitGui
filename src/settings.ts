@@ -18,6 +18,10 @@ export interface Settings {
   laneChips: boolean;
   /** look up open pull requests on GitHub / Azure DevOps */
   prLookups: boolean;
+  /** show GitHub profile pictures for authors with a GitHub address or a saved account (only a public username is sent) */
+  profilePictures: boolean;
+  /** also look authors up on Gravatar, which sends a hash of each author's email address to gravatar.com */
+  gravatarLookups: boolean;
   /** which branches count as main branches: names separated by commas, `*` as a wildcard */
   mainBranches: string;
   /** when the app starts, look in the update folder for a newer build and offer it */
@@ -36,6 +40,8 @@ export const DEFAULT_SETTINGS: Settings = {
   fixedColors: true,
   laneChips: true,
   prLookups: true,
+  profilePictures: true,
+  gravatarLookups: false, // off until switched on: it tells a third party which email addresses appear in the history
   mainBranches: DEFAULT_MAIN_BRANCHES,
   updateCheck: true,
   updateFolder: '',

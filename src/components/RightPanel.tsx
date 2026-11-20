@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { call } from '../api';
 import { Icon } from '../icons';
 import type { CommitDetail, CommitFile, DiffTarget, StatusFile } from '../types';
-import { basename, dirname, fullDate, initials, shortHash } from '../util';
+import { basename, dirname, fullDate, shortHash } from '../util';
+import { AuthorAvatar } from './AuthorPicture';
 
 const STATUS_CLASS: Record<string, string> = { A: 'add', '?': 'add', M: 'mod', D: 'del', R: 'ren', C: 'ren', U: 'del', T: 'mod' };
 
@@ -161,7 +162,7 @@ export function CommitPanel({ repo, hash, active, onOpen, onError, onEdit, editB
         </div>
         {body && <CommitBody text={body} />}
         <div className="cd-meta">
-          <div className="avatar">{initials(detail.author)}</div>
+          <AuthorAvatar name={detail.author} email={detail.email} />
           <div>
             <div className="cd-author">{detail.author}</div>
             <div className="cd-date">{fullDate(detail.date)}</div>

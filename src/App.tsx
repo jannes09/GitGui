@@ -16,7 +16,9 @@ import { Toolbar } from './components/Toolbar';
 import { basename, parseTrack, samePath } from './util';
 import { createPrUrl, isSafePrUrl, publishedName } from './pullRequests';
 import { DEFAULT_REFS_W, MAIN_COLOR_BY_GROUP, WIP_HASH, computeGraph, findMainLines } from './graph';
+import { PictureSourcesProvider } from './components/AuthorPicture';
 import { SettingsDialog } from './components/SettingsDialog';
+import type { PictureSources } from './avatars';
 import { UpdateDialog } from './components/UpdateDialog';
 import { branchGroup, branchMatcher } from './refLabels';
 import { readSettings, writeSettings, type Settings } from './settings';
@@ -144,6 +146,12 @@ export function App() {
   settingsRef.current = settings;
   useEffect(() => writeSettings(settings), [settings]);
   const changeSettings = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
+  // which profile picture sources are on; the saved accounts let a user's own commits show their picture
+  const pictureAccounts = accounts?.profiles;
+  const pictureSources = useMemo<PictureSources>(
+    () => ({ github: settings.profilePictures, gravatar: settings.gravatarLookups, accounts: pictureAccounts ?? [] }),
+    [settings.profilePictures, settings.gravatarLookups, pictureAccounts],
+  );
   const [acctBusy, setAcctBusy] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>(readRecent);
   const [tabs, setTabs] = useState<RepoTab[]>(readTabs);
@@ -1538,6 +1546,7 @@ export function App() {
   };
 
   return (
+    <PictureSourcesProvider value={pictureSources}>
     <div className="app">
       <RepoTabs
         tabs={tabs}
@@ -1809,5 +1818,6 @@ export function App() {
       )}
       {confirm && <ConfirmDialog spec={confirm} onClose={() => setConfirm(null)} />}
     </div>
+    </PictureSourcesProvider>
   );
 }
