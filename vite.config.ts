@@ -62,8 +62,12 @@ function cspPlugin(): Plugin {
   };
 }
 
+const pkg = require('./package.json') as { version: string };
+
 export default defineConfig({
   base: './',
+  // the app's version number, shown in Settings (see src/version.ts)
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   plugins: [react(), rpcPlugin(), cspPlugin()],
   server: { host: '127.0.0.1', port: 5173 },
   build: { outDir: 'dist', emptyOutDir: true },

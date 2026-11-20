@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { isElectron, pickFolder } from '../api';
 import { DEFAULT_MAIN_BRANCHES, DEFAULT_SETTINGS, type Settings } from '../settings';
 import type { UpdateInfo } from '../types';
+import { APP_VERSION } from '../version';
 import { Icon } from '../icons';
 
 interface Props {
@@ -31,7 +32,7 @@ function Toggle({ settings, onChange, name, label, hint }: { settings: Settings;
 /** All the switches in one place. Changes apply straight away, so the graph behind the dialog shows the effect. */
 export function SettingsDialog({ settings, onChange, onClose, update, checkingUpdate, onCheckUpdate }: Props) {
   const close = useRef<HTMLButtonElement>(null);
-  useEffect(() => close.current?.focus(), []);
+  useEffect(() => close.current?.focus({ preventScroll: true }), []); // the dialog opens at its top, not scrolled down to Done
   const t = { settings, onChange };
 
   const browse = async () => {
@@ -55,7 +56,9 @@ export function SettingsDialog({ settings, onChange, onClose, update, checkingUp
         onKeyDown={(e) => e.key === 'Escape' && onClose()}
       >
         <div className="modal-head">
-          <h3>Settings</h3>
+          <h3>
+            Settings <span className="set-version">GitGui {APP_VERSION}</span>
+          </h3>
           <button className="icon-btn" onClick={onClose} aria-label="Close settings">
             <Icon name="close" size={14} />
           </button>

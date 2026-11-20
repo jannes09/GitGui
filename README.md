@@ -132,8 +132,13 @@ was started elsewhere (or by `pull --rebase`) is handled the same way.
 **Icon and splash:** the app icon is a white commit graph on a bright teal-to-blue tile, drawn at every size from the
 vector (the small sizes use heavier lines) so it stays visible on a taskbar; `npm run icon` redraws it. On start a
 small splash window shows a commit graph drawing itself (one branch leaves the main line and merges back) for at least
-1.8 s while the main window loads, then fades out. It is `electron/splash.html`, pure CSS, and follows the system's
-reduced-motion setting. `GITGUI_SPLASH_LOG=1` prints the splash timing and quits, for checking the sequence.
+1.8 s while the main window loads, then fades out. The app's version number appears under the name. It is
+`electron/splash.html`, pure CSS (the main process writes the version into it before loading, see `electron/splash-page.cjs`),
+and follows the system's reduced-motion setting. `GITGUI_SPLASH_LOG=1` prints the splash timing and quits, for checking
+the sequence.
+
+**Version number:** shown on the splash and next to the title of the Settings dialog (`GitGui 0.2.0`). It is the
+`version` in `package.json`, so raising it there (see Updates below) changes both after the next build.
 
 **Portable exe or installer:** the portable exe unpacks the whole app (about 315 MB) into a temp folder every time it
 starts, which takes around 9 s before the splash can appear. The installer (`npm run dist:installer`, per-user, no

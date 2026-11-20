@@ -1,8 +1,10 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const fs = require('node:fs');
 const path = require('node:path');
 const handlers = require('./handlers.cjs');
 const updates = require('./updates.cjs');
+const { splashHtml } = require('./splash-page.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || '';
 
@@ -43,7 +45,9 @@ function createSplash() {
     log('shown');
     splash.show();
   });
-  splash.loadFile(path.join(__dirname, 'splash.html'));
+  // the page has no scripts, so the version is written into it here rather than looked up by the page
+  const html = splashHtml(fs.readFileSync(path.join(__dirname, 'splash.html'), 'utf8'), app.getVersion());
+  splash.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
   return splash;
 }
 
