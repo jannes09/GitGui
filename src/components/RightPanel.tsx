@@ -109,9 +109,13 @@ interface CommitPanelProps {
   active: DiffTarget | null;
   onOpen: (t: DiffTarget) => void;
   onError: (msg: string) => void;
+  /** opens the editor for the commit's message; leave out where a message cannot be edited (stashes) */
+  onEdit?: () => void;
+  /** why the message cannot be edited right now (pushed, on another branch, an operation in progress), if so */
+  editBlocked?: string | null;
 }
 
-export function CommitPanel({ repo, hash, active, onOpen, onError }: CommitPanelProps) {
+export function CommitPanel({ repo, hash, active, onOpen, onError, onEdit, editBlocked }: CommitPanelProps) {
   const [detail, setDetail] = useState<CommitDetail | null>(null);
   const [files, setFiles] = useState<CommitFile[]>([]);
 
@@ -141,7 +145,20 @@ export function CommitPanel({ repo, hash, active, onOpen, onError }: CommitPanel
   return (
     <div className="rp">
       <div className="rp-scroll">
-        <div className="cd-subject">{subject}</div>
+        <div className="cd-subject-row">
+          <div className="cd-subject">{subject}</div>
+          {onEdit && (
+            <button
+              className="icon-btn"
+              onClick={onEdit}
+              disabled={!!editBlocked}
+              aria-label="Edit commit message"
+              title={editBlocked ?? 'Edit the summary and description'}
+            >
+              <Icon name="edit" size={14} />
+            </button>
+          )}
+        </div>
         {body && <CommitBody text={body} />}
         <div className="cd-meta">
           <div className="avatar">{initials(detail.author)}</div>

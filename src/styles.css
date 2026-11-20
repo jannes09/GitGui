@@ -495,6 +495,21 @@ body.resizing * { cursor: col-resize !important; }
 }
 /* ---------- settings ---------- */
 .modal.settings { width: 640px; }
+
+/* edit commit message */
+.modal.edit-msg { width: 560px; }
+.modal.edit-msg .field { margin-bottom: 12px; }
+.modal.edit-msg textarea {
+  display: block; width: 100%; min-height: 120px; max-height: 50vh; padding: 7px 10px; resize: vertical;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px; outline: 0;
+  font: inherit; color: var(--text); line-height: 1.45;
+}
+.modal.edit-msg textarea:focus { border-color: var(--accent); }
+.edit-msg-hash { margin-left: 6px; font-size: 12px; font-weight: 400; color: var(--text-dim); }
+.modal.edit-msg .modal-text.small { margin: 10px 0 0; }
+.cd-subject-row { display: flex; align-items: flex-start; gap: 6px; }
+.cd-subject-row .cd-subject { flex: 1; min-width: 0; }
+.cd-subject-row .icon-btn { flex: none; margin: 12px 10px 0 0; }
 .set-title { margin: 14px 0 4px; font-size: 12px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-dim); }
 .set-group { margin: 8px 0; padding: 8px 12px 10px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; gap: 6px; }
 .set-name { font-size: 12px; font-weight: 700; color: var(--accent); }

@@ -32,8 +32,8 @@ Commit graph with avatars and branch/tag pills, WIP row, sidebar (local, remote,
 stage / unstage / discard (file and hunk level), commit and amend, fetch / pull / push,
 checkout, create branch / tag, merge, cherry-pick, revert, reset, stash / pop, commit search.
 
-**Undo / redo** (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, plus the toolbar buttons) covers commit, amend, checkout,
-create / delete branch, create tag, merge, pull, cherry-pick, revert and reset. Each action is recorded as a
+**Undo / redo** (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, plus the toolbar buttons) covers commit, amend, edit commit message,
+checkout, create / delete branch, create tag, merge, pull, cherry-pick, revert and reset. Each action is recorded as a
 before/after snapshot of HEAD, local branches and tags. Undo is refused if the repository changed outside the
 app since, or if it would overwrite local edits. Fetch, push, stash and staging are not undoable.
 
@@ -98,6 +98,17 @@ labels on the lane's newest commit, or from a merge message ("Merge branch 'x'",
 lanes of branches that were deleted without such a message have no name.
 
 The settings page also has the switch for the pull request lookups.
+
+**Editing commit messages:** right-click a commit and choose "Edit commit message…", or click the pencil beside its
+summary in the details panel, to change its summary and description (Enter in the summary jumps to the description,
+Ctrl+Enter saves). This works for commits that have not been pushed and that only the checked-out branch holds, so
+nothing is left behind with the old message; otherwise the item is greyed out and the tooltip says why (already on a
+remote, also on another branch, tagged, or a merge / rebase is in progress). A message is part of a commit's id, so the
+commit and the commits after it on the branch are rebuilt with new ids. Their files, authors, dates and messages stay
+the same; the edited commit's committer becomes you, as with `git commit --amend`. The working tree and staged changes
+are not touched, nothing can conflict, and Ctrl+Z puts the old commits back. At most 250 later commits are rebuilt
+(about 0.1 s each) and GPG signatures on rebuilt commits are dropped. It is done with `git commit-tree` and one
+`git update-ref`, not a rebase, and commit-msg hooks are not run.
 
 **Deleting branches:** right-click a commit (or a branch in the sidebar) to delete a local branch, its copy on the
 remote (`git push --delete`), or both. Deleting the local copy is undoable and git refuses it, with an

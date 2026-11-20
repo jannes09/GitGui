@@ -8,6 +8,7 @@ import { DiffView } from './components/DiffView';
 import { GraphView } from './components/GraphView';
 import { Splitter } from './components/Splitter';
 import { AccountsDialog } from './components/AccountsDialog';
+import { EditMessageDialog, type EditMessageSpec } from './components/EditMessageDialog';
 import { ConfirmDialog, ContextMenu, PromptDialog, type ConfirmSpec, type MenuItem, type PromptSpec } from './components/Overlays';
 import { CommitPanel, StagingPanel } from './components/RightPanel';
 import { Sidebar, type SidebarItem } from './components/Sidebar';
@@ -24,12 +25,15 @@ import type {
   AccountsData,
   ActiveAccount,
   Commit,
+  CommitEditInfo,
   ConflictOutcome,
   DiffTarget,
+  EditableCommits,
   PullRequest,
   PullRequestInfo,
   RefsData,
   RepoSnapshot,
+  RewordResult,
   Selection,
   StatusData,
   StatusFile,
@@ -41,6 +45,8 @@ const RECENT_KEY = 'gitgui.recent';
 const TABS_KEY = 'gitgui.tabs';
 const PAGE = 1000;
 const MAX_HISTORY = 50;
+
+const NO_HASHES = new Set<string>();
 
 const SIDEBAR = { key: 'gitgui.sidebarWidth', def: 250, min: 180, max: 480 };
 const RIGHT = { key: 'gitgui.rightWidth', def: 380, min: 300, max: 640 };
@@ -112,6 +118,8 @@ export function App() {
   const [refs, setRefs] = useState<RefsData | null>(null);
   const [status, setStatus] = useState<StatusData | null>(null);
   const [commits, setCommits] = useState<Commit[]>([]);
+  const [editable, setEditable] = useState<Set<string>>(NO_HASHES); // unpushed commits whose message can be edited
+  const [editMsg, setEditMsg] = useState<EditMessageSpec | null>(null);
   const [limit, setLimit] = useState(PAGE);
   const [sel, setSel] = useState<Selection>(null);
   const [diff, setDiff] = useState<DiffTarget | null>(null);
@@ -190,8 +198,15 @@ export function App() {
     setStatus(s);
     if (forceLog || key !== refsKey.current) {
       refsKey.current = key;
-      const log = await call<Commit[]>('log', { repo: root, limit: limitRef.current });
-      if (repoRef.current === root) setCommits(log);
+      const [log, ed] = await Promise.all([
+        call<Commit[]>('log', { repo: root, limit: limitRef.current }),
+        // which commits can have their message edited; the app works without this if it fails
+        call<EditableCommits>('editableCommits', { repo: root }).catch(() => null),
+      ]);
+      if (repoRef.current === root) {
+        setCommits(log);
+        setEditable(ed && ed.hashes.length ? new Set(ed.hashes) : NO_HASHES);
+      }
     }
   }, []);
 
@@ -282,6 +297,8 @@ export function App() {
         setRefs(null);
         setStatus(null);
         setCommits([]);
+        setEditable(NO_HASHES);
+        setEditMsg(null);
         setSel(saved?.sel ?? null);
         setDiff(null);
         setQuery('');
@@ -324,6 +341,8 @@ export function App() {
       setRefs(null);
       setStatus(null);
       setCommits([]);
+      setEditable(NO_HASHES);
+      setEditMsg(null);
       setSel(null);
       setDiff(null);
       setUndoStack([]);
@@ -448,7 +467,7 @@ export function App() {
       opts: {
         ok?: string | ((result: unknown) => string);
         log?: boolean;
-        undo?: { label: string; mode?: 'soft' | 'keep' };
+        undo?: { label: string; mode?: 'soft' | 'keep'; remap?: () => Record<string, string> | undefined };
         /** return true when the failure was handled (e.g. by opening a dialog) so no error toast is shown */
         onError?: (message: string) => boolean;
       } = {},
@@ -464,7 +483,7 @@ export function App() {
         if (undo && before?.head.hash) {
           const after = await call<RepoSnapshot>('snapshot', { repo: root }).catch(() => null);
           if (after && JSON.stringify(after) !== JSON.stringify(before)) {
-            const op: UndoOp = { label: undo.label, before, after, mode: undo.mode ?? 'keep' };
+            const op: UndoOp = { label: undo.label, before, after, mode: undo.mode ?? 'keep', remap: undo.remap?.() };
             if (repoRef.current === root) {
               setUndoStack((s) => [...s, op].slice(-MAX_HISTORY));
               setRedoStack([]);
@@ -512,6 +531,11 @@ export function App() {
         } else {
           setRedoStack((s) => s.slice(0, -1));
           setUndoStack((s) => [...s, op]);
+        }
+        if (op.remap) {
+          // commits that were rebuilt have other ids now: keep the selection on the same commit
+          const to = dir === 'undo' ? Object.fromEntries(Object.entries(op.remap).map(([from, now]) => [now, from])) : op.remap;
+          setSel((s) => (s?.kind === 'commit' && to[s.hash] ? { kind: 'commit', hash: to[s.hash] } : s));
         }
         notify(`${dir === 'undo' ? 'Undid' : 'Redid'}: ${op.label}`);
       } catch (e) {
@@ -1058,6 +1082,47 @@ export function App() {
     jumpTo(matchList[next]);
   };
 
+  /* ---------- editing a commit's message ---------- */
+
+  // null when the message of this commit can be edited, otherwise why not (shown as a tooltip)
+  const editBlocked = (hash: string): string | null =>
+    operation
+      ? `Finish or abort the ${operation.kind} first`
+      : editable.has(hash)
+        ? null
+        : 'Only commits that have not been pushed, and are on the checked-out branch only, can be edited';
+
+  const openEditMessage = async (hash: string) => {
+    if (busyRef.current) return;
+    setBusy('Reading commit');
+    try {
+      const info = await git<CommitEditInfo>('commitEditInfo', { hash });
+      setEditMsg({ ...info, hash });
+    } catch (e) {
+      notifyError((e as Error).message); // the backend says exactly why, e.g. which remote already has the commit
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveMessage = async (hash: string, summary: string, description: string) => {
+    let result: RewordResult | null = null;
+    const ok = await act(
+      'Editing message',
+      async () => (result = await git<RewordResult>('rewordCommit', { hash, summary, description })),
+      { ok: 'Commit message updated', undo: { label: 'Edit commit message', mode: 'keep', remap: () => (result as RewordResult | null)?.map } },
+    );
+    const made = result as RewordResult | null;
+    if (!ok || !made) return;
+    // the commit and the ones after it have new ids: keep the selection on the same commit
+    const current = selRef.current;
+    if (current?.kind === 'commit' && made.map[current.hash]) {
+      const next = made.map[current.hash];
+      setSel({ kind: 'commit', hash: next });
+      if (current.hash === hash) focusHash(next);
+    }
+  };
+
   /* ---------- context menus ---------- */
 
   const commitMenu = (e: React.MouseEvent, hash: string) => {
@@ -1126,6 +1191,13 @@ export function App() {
             onSubmit: (name) =>
               void act('Tagging', () => git('createTag', { name, hash }), { ok: `Created tag ${name}`, undo: { label: `Create tag ${name}` } }),
           }),
+      },
+      { label: '', onClick: () => {}, separator: true },
+      {
+        label: 'Edit commit message…',
+        disabled: editBlocked(hash) !== null,
+        title: editBlocked(hash) ?? undefined,
+        onClick: () => void openEditMessage(hash),
       },
       { label: '', onClick: () => {}, separator: true },
       {
@@ -1615,7 +1687,16 @@ export function App() {
                 }
               />
             ) : sel && sel.kind !== 'wip' ? (
-              <CommitPanel key={sel.hash} repo={repo.root} hash={sel.hash} active={diff} onOpen={setDiff} onError={notifyError} />
+              <CommitPanel
+                key={sel.hash}
+                repo={repo.root}
+                hash={sel.hash}
+                active={diff}
+                onOpen={setDiff}
+                onError={notifyError}
+                onEdit={sel.kind === 'commit' ? () => void openEditMessage(sel.hash) : undefined}
+                editBlocked={editBlocked(sel.hash)}
+              />
             ) : (
               <div className="rp-empty">Select a commit to see its details</div>
             )}
@@ -1653,6 +1734,13 @@ export function App() {
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {prompt && <PromptDialog spec={prompt} onClose={() => setPrompt(null)} />}
+      {editMsg && (
+        <EditMessageDialog
+          spec={editMsg}
+          onClose={() => setEditMsg(null)}
+          onSave={(summary, description) => void saveMessage(editMsg.hash, summary, description)}
+        />
+      )}
       {acctDialog && accounts && (
         <AccountsDialog
           data={accounts}

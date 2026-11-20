@@ -36,7 +36,7 @@ function run(repo, args, opts = {}) {
     child.on('close', (code) => {
       const stdout = Buffer.concat(out).toString('utf8');
       const stderr = Buffer.concat(err).toString('utf8');
-      if ((opts.okCodes || [0]).includes(code)) resolve(stdout);
+      if ((opts.okCodes || [0]).includes(code)) resolve(opts.binary ? Buffer.concat(out) : stdout);
       else reject(new Error(classifyError((stderr || stdout || `git exited with code ${code}`).trim())));
     });
     child.stdin.on('error', () => {});
@@ -290,6 +290,113 @@ async function credentialToken(repo, info) {
   return value;
 }
 
+// ---- editing the message of an unpushed commit ------------------------------------
+// A commit's message is part of its id, so changing it makes a new commit, and a new version of every
+// later commit on the branch (their parent changed). That is done with plumbing: each commit is rebuilt
+// with `git commit-tree` from the same tree, author, committer and message, with only the parent (and,
+// for the edited one, the message) different, then the branch moves with a single `git update-ref`.
+// The files never change, so the working tree and the index are not touched and nothing can conflict.
+// Only commits nobody else can have are allowed: not on any remote, and not on another local branch or
+// tag, which would be left pointing at the old version.
+
+const EDIT_SCAN = 5000; // how many commits are checked when listing the editable ones
+const EDIT_MAX_REWRITE = 250; // later commits that may be rebuilt for one edit (each takes about 0.1 s)
+
+// The new message: summary, a blank line, then the description.
+function commitMessageText(summary, description) {
+  const clean = (s) => (typeof s === 'string' ? s.replace(/\r\n?/g, '\n') : '');
+  const head = clean(summary).trim();
+  if (!head) throw new Error('The summary cannot be empty.');
+  if (head.includes('\n')) throw new Error('The summary must be a single line. Put the rest in the description.');
+  const body = clean(description).replace(/^\n+/, '').trimEnd();
+  if (head.includes('\0') || body.includes('\0')) throw new Error('The message cannot contain null characters.');
+  return body ? `${head}\n\n${body}\n` : `${head}\n`;
+}
+
+// "Name <email> 1700000000 +0200", as it is stored in a commit
+function parseIdent(line) {
+  const m = /^(.*) <([^<>]*)> (\d+) ([+-]\d{4})$/.exec(line || '');
+  if (!m) throw new Error('Could not read the author or date of a commit.');
+  return { name: m[1], email: m[2], date: `${m[3]} ${m[4]}` };
+}
+
+function parseCommitObject(buf) {
+  const end = buf.indexOf('\n\n');
+  const lines = (end < 0 ? buf : buf.subarray(0, end)).toString('utf8').split('\n');
+  const c = { tree: '', parents: [], author: '', committer: '', encoding: '', message: end < 0 ? Buffer.alloc(0) : buf.subarray(end + 2) };
+  for (const line of lines) {
+    if (line.startsWith(' ')) continue; // the rest of a multi-line header such as a signature
+    const sp = line.indexOf(' ');
+    const key = sp < 0 ? line : line.slice(0, sp);
+    const val = sp < 0 ? '' : line.slice(sp + 1);
+    if (key === 'tree') c.tree = val;
+    else if (key === 'parent') c.parents.push(val);
+    else if (key === 'author') c.author = val;
+    else if (key === 'committer') c.committer = val;
+    else if (key === 'encoding') c.encoding = val;
+  }
+  return c;
+}
+
+// Reads commit objects byte for byte (a message may not be UTF-8), in the order given.
+async function readCommits(repo, hashes) {
+  const buf = await run(repo, ['cat-file', '--batch'], { input: hashes.join('\n') + '\n', binary: true });
+  const out = new Map();
+  let pos = 0;
+  for (const h of hashes) {
+    const nl = buf.indexOf(0x0a, pos);
+    if (nl < 0) throw new Error('Could not read the commits.');
+    const [oid, type, size] = buf.toString('latin1', pos, nl).split(' ');
+    if (type !== 'commit') throw new Error('That is not a commit.');
+    const start = nl + 1;
+    const n = Number(size);
+    out.set(oid, parseCommitObject(buf.subarray(start, start + n)));
+    pos = start + n + 1;
+    if (!out.has(h)) throw new Error('Could not read the commits.');
+  }
+  return out;
+}
+
+const nameList = (names) => (names.length <= 3 ? names.join(', ') : `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`);
+
+// Throws a sentence for the user when this commit may not be edited; otherwise says what editing it involves.
+async function checkEditable(repo, hash) {
+  if (typeof hash !== 'string' || !HASH_RE.test(hash)) throw new Error('Invalid commit');
+  // the questions below are independent, so ask them together: every git call costs about 0.1 s on Windows
+  const [hasCommits, op] = await Promise.all([hasHead(repo), operationState(repo).catch(() => null)]);
+  if (!hasCommits) throw new Error('This repository has no commits.');
+  if (op) throw new Error(`Finish or abort the ${op.kind} that is in progress first.`);
+  const [type, headOut, currentOut, holdersOut] = await Promise.all([
+    run(repo, ['cat-file', '-t', hash], { okCodes: [0, 128] }),
+    run(repo, ['rev-parse', 'HEAD']),
+    run(repo, ['symbolic-ref', '-q', 'HEAD'], { okCodes: [0, 1] }), // refs/heads/name, or nothing when detached
+    run(repo, ['for-each-ref', '--contains', hash, '--format=%(refname)', 'refs/remotes', 'refs/heads', 'refs/tags']).catch(() => ''),
+  ]);
+  if (type.trim() !== 'commit') throw new Error('That commit was not found.');
+  const head = headOut.trim();
+  const current = currentOut.trim();
+  const holders = holdersOut.split('\n').filter(Boolean);
+  const remote = holders.filter((r) => r.startsWith('refs/remotes/') && !r.endsWith('/HEAD')).map((r) => r.slice(13));
+  if (remote.length) {
+    throw new Error(`This commit is already on ${nameList(remote)}. Only commits that have not been pushed can be edited, because changing a pushed commit needs a force push.`);
+  }
+  const [notOnHead, laterOut] = await Promise.all([
+    run(repo, ['rev-list', '--max-count=1', hash, `^${head}`]),
+    run(repo, ['rev-list', '--topo-order', '--reverse', '--ancestry-path', `${hash}..${head}`]),
+  ]);
+  if (notOnHead.trim()) throw new Error('This commit is not on the checked-out branch. Check out the branch it belongs to first.');
+  const branches = holders.filter((r) => r.startsWith('refs/heads/') && r !== current).map((r) => r.slice(11));
+  if (branches.length) throw new Error(`This commit is also on ${branches.length === 1 ? 'branch' : 'branches'} ${nameList(branches)}, which would keep the old version of it.`);
+  const tags = holders.filter((r) => r.startsWith('refs/tags/')).map((r) => r.slice(10));
+  if (tags.length) throw new Error(`This commit is tagged ${nameList(tags)}, and the tag would keep pointing at the old version.`);
+
+  const later = laterOut.split('\n').filter(Boolean);
+  if (later.length > EDIT_MAX_REWRITE) {
+    throw new Error(`Editing this commit would rewrite the ${later.length} commits after it. The limit is ${EDIT_MAX_REWRITE}.`);
+  }
+  return { head, later, branch: current ? current.slice(11) : null };
+}
+
 const handlers = {
   async openRepo({ path: p }) {
     assertRepo(p);
@@ -518,6 +625,80 @@ const handlers = {
     if (!msg && !amend) throw new Error('Commit message is empty');
     if (amend && !msg) await run(repo, ['commit', '--amend', '--no-edit']);
     else await run(repo, ['commit', ...(amend ? ['--amend'] : []), '-F', '-'], { input: msg + '\n' });
+  },
+
+  // Commits on the checked-out branch whose message may be edited (see "editing the message" above).
+  async editableCommits({ repo }) {
+    assertRepo(repo);
+    if (!(await hasHead(repo))) return { hashes: [], reason: null };
+    const op = await operationState(repo).catch(() => null);
+    if (op) return { hashes: [], reason: `Finish or abort the ${op.kind} first` };
+    const current = (await run(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { okCodes: [0, 1] })).trim();
+    const args = ['rev-list', `--max-count=${EDIT_SCAN}`, 'HEAD', '--not', '--remotes'];
+    if (current) args.push(`--exclude=${current}`); // the checked-out branch is allowed to contain them
+    args.push('--branches', '--tags');
+    const out = await run(repo, args);
+    return { hashes: out.split('\n').filter(Boolean), reason: null };
+  },
+
+  // The message of a commit split for editing, or the reason it cannot be edited.
+  async commitEditInfo({ repo, hash }) {
+    assertRepo(repo);
+    if (typeof hash !== 'string' || !HASH_RE.test(hash)) throw new Error('Invalid commit');
+    const [{ later, branch }, shown] = await Promise.all([checkEditable(repo, hash), run(repo, ['show', '-s', '--format=%B', hash]).catch(() => '')]);
+    const text = shown.replace(/\r\n?/g, '\n').trimEnd();
+    const nl = text.indexOf('\n');
+    const summary = nl < 0 ? text : text.slice(0, nl);
+    const description = nl < 0 ? '' : text.slice(nl + 1).replace(/^\n+/, '');
+    return { summary, description, later: later.length, branch };
+  },
+
+  // Gives a commit a new message. The commits after it on the branch are rebuilt on top of it, with
+  // everything else about them unchanged, and the branch moves to the new tip. `map` lists old -> new ids.
+  async rewordCommit({ repo, hash, summary, description }) {
+    assertRepo(repo);
+    const message = Buffer.from(commitMessageText(summary, description), 'utf8');
+    const { head, later } = await checkEditable(repo, hash);
+    const chain = [hash, ...later];
+    const commits = await readCommits(repo, chain);
+    if (Buffer.compare(commits.get(hash).message, message) === 0) throw new Error('The message is unchanged.');
+
+    // like `git commit --amend`, the edited commit gets the person who edits it as its committer
+    let editor = null;
+    try {
+      editor = parseIdent((await run(repo, ['var', 'GIT_COMMITTER_IDENT'])).trim());
+    } catch {
+      /* no identity set up: keep the original committer */
+    }
+    const made = new Map();
+    for (const old of chain) {
+      const c = commits.get(old);
+      const author = parseIdent(c.author);
+      const committer = old === hash && editor ? editor : parseIdent(c.committer);
+      const args = [];
+      if (old !== hash && /^[\w.:-]+$/.test(c.encoding)) args.push('-c', `i18n.commitEncoding=${c.encoding}`); // keep a non-UTF-8 message as it was
+      args.push('commit-tree', c.tree);
+      for (const p of c.parents) args.push('-p', made.get(p) ?? p);
+      const out = await run(repo, args, {
+        input: old === hash ? message : c.message,
+        env: {
+          GIT_AUTHOR_NAME: author.name,
+          GIT_AUTHOR_EMAIL: author.email,
+          GIT_AUTHOR_DATE: author.date,
+          GIT_COMMITTER_NAME: committer.name,
+          GIT_COMMITTER_EMAIL: committer.email,
+          GIT_COMMITTER_DATE: committer.date,
+        },
+      });
+      made.set(old, out.trim());
+    }
+
+    // the files must be exactly what they were; then move the branch, but only if it is still where it was
+    const newHead = made.get(head);
+    const tree = async (c) => (await run(repo, ['rev-parse', `${c}^{tree}`])).trim();
+    if (!newHead || (await tree(newHead)) !== (await tree(head))) throw new Error('The files would have changed, so nothing was changed.');
+    await run(repo, ['update-ref', '-m', `reword: ${String(summary).trim()}`, 'HEAD', newHead, head]);
+    return { hash: made.get(hash), head: newHead, map: Object.fromEntries(made) };
   },
 
   async fetch({ repo }) {
