@@ -164,6 +164,7 @@ body.resizing * { cursor: col-resize !important; }
   position: absolute; left: 0; right: 0;
   display: grid; grid-template-columns: var(--cols); align-items: center;
   cursor: default;
+  user-select: none; /* a double-click checks out a branch: it must not also highlight the word under the pointer */
 }
 .g-row:hover { background: var(--bg-hover); }
 .g-row.selected { background: var(--bg-select); }
@@ -520,6 +521,7 @@ body.resizing * { cursor: col-resize !important; }
 .update-label { font-size: 12px; color: var(--text-dim); }
 .update-error { margin: 4px 0 0; padding: 8px 10px; border-radius: 6px; background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.4); color: var(--danger); font-size: 12.5px; line-height: 1.45; word-break: break-word; }
 .modal.update .btn.ghost { margin-right: auto; color: var(--text-dim); }
+.modal-note { margin: 10px 0 0; }
 .set-version { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .set-folder { display: flex; gap: 8px; }
 .set-folder input { flex: 1; min-width: 0; }

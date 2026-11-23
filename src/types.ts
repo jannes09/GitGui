@@ -146,6 +146,32 @@ export interface UpdateInfo {
   error: string | null;
 }
 
+/** A commit of the remote's that a force push would drop. */
+export interface ForcePushCommit {
+  hash: string;
+  author: string;
+  /** unix seconds */
+  date: number;
+  subject: string;
+}
+
+/** The remote's copy of the checked-out branch compared with the local one, for the force push confirmation. */
+export interface ForcePushInfo {
+  branch: string;
+  remote: string;
+  /** the local commit that would be pushed */
+  head: string;
+  /** the commit the remote branch is at now (what the push is pinned to); null when it is not on the remote */
+  remoteTip: string | null;
+  /** gone = not on the remote, same, ahead = only a normal push is needed, behind / diverged = forcing replaces commits */
+  relation: 'gone' | 'same' | 'ahead' | 'behind' | 'diverged';
+  /** the commits only the remote has (newest first, the first few) */
+  lost: ForcePushCommit[];
+  lostTotal: number;
+  /** the commits only the local branch has */
+  localOnly: number;
+}
+
 export interface RepoSnapshot {
   head: { branch: string | null; hash: string | null };
   branches: Record<string, string>;

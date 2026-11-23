@@ -15,6 +15,7 @@ import { Sidebar, type SidebarItem } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
 import { basename, parseTrack, samePath } from './util';
 import { createPrUrl, isSafePrUrl, publishedName } from './pullRequests';
+import { forcePushNotice, forcePushText } from './forcePush';
 import { DEFAULT_REFS_W, MAIN_COLOR_BY_GROUP, WIP_HASH, computeGraph, findMainLines } from './graph';
 import { PictureSourcesProvider } from './components/AuthorPicture';
 import { SettingsDialog } from './components/SettingsDialog';
@@ -32,6 +33,7 @@ import type {
   ConflictOutcome,
   DiffTarget,
   EditableCommits,
+  ForcePushInfo,
   PullRequest,
   PullRequestInfo,
   RefsData,
@@ -711,11 +713,11 @@ export function App() {
   // Like act(), for operations that talk to GitHub: when they fail because of sign-in or the wrong
   // account, offer to sign in (and then retry) instead of showing a raw git error.
   type ActOpts = Parameters<typeof act>[2];
-  const netAct = (label: string, fn: () => Promise<unknown>, opts: ActOpts = {}): void => {
-    void act(label, fn, {
+  const netAct = (label: string, fn: () => Promise<unknown>, opts: ActOpts = {}): Promise<boolean> =>
+    act(label, fn, {
       ...opts,
       onError: (msg) => {
-        if (!msg.startsWith('AUTH:')) return false;
+        if (!msg.startsWith('AUTH:')) return opts?.onError?.(msg) ?? false;
         const denied = /Permission to (\S+?)(?:\.git)? denied to (\S+?)\.?(?:\s|$)/i.exec(msg);
         if (denied) {
           setConfirm({
@@ -738,9 +740,36 @@ export function App() {
         return true;
       },
     });
+
+  // Replacing the remote's copy of the checked-out branch (after a rebase, an amend or an edited message). First the
+  // remote is looked at and the commits it would lose are shown; the push itself is pinned to the commit that was
+  // shown, so it only goes through if nobody has pushed since.
+  const startForcePush = () =>
+    netAct('Checking the remote', async () => {
+      const info = await git<ForcePushInfo>('forcePushInfo');
+      const notice = forcePushNotice(info);
+      if (notice) return notify(notice);
+      setConfirm({
+        ...forcePushText(info, branchMatcher(settingsRef.current.mainBranches)(info.branch)),
+        danger: true,
+        onConfirm: () =>
+          void netAct('Force pushing', () => git('forcePush', { head: info.head, expect: info.remoteTip }), {
+            ok: `Replaced ${info.remote}/${info.branch} with your branch`,
+          }),
+      });
+    });
+
+  // A normal push. When the remote turns it away because it has commits this branch lacks (the branch was rewritten),
+  // the force push check opens instead of an error.
+  const pushNow = () => {
+    let rejected = false;
+    void netAct('Pushing', () => git<{ published?: string }>('push'), {
+      ok: (r) => ((r as { published?: string } | null)?.published ? `Pushed as the new branch ${(r as { published: string }).published}, which this branch now tracks` : 'Push complete'),
+      onError: (msg) => (rejected = msg.startsWith('REJECTED:')),
+    }).then(() => rejected && startForcePush());
   };
 
-  const accountMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+  const accountMenu =(e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation(); // the menu closes on any window click, including this one
     void loadAccounts();
     const r = e.currentTarget.getBoundingClientRect();
@@ -995,6 +1024,23 @@ export function App() {
     return url && name && !/^(main|master)$/.test(name) ? [{ label: `Create pull request for ${name}…`, onClick: () => openUrl(url) }] : [];
   };
 
+  // "Force push": for a local branch that has a copy on the remote. It works on the checked-out branch, like Push.
+  const pushItems = (local: string): MenuItem[] => {
+    if (!remoteOf(local)) return [];
+    const current = refs?.current === local;
+    return [
+      {
+        label: `Force push ${local}…`,
+        danger: true,
+        disabled: !current,
+        title: current
+          ? 'Replace the remote copy with this branch after a rebase, amend or edited message. It shows what would be lost and asks first.'
+          : 'Check this branch out first: pushing works on the checked-out branch',
+        onClick: () => void startForcePush(),
+      },
+    ];
+  };
+
   const stashItems = (ref: string): MenuItem[] => [
     {
       label: 'Pop stash',
@@ -1208,7 +1254,7 @@ export function App() {
     const seenRemote = new Set<string>();
     for (const b of refs?.branches ?? []) {
       if (b.hash !== hash) continue;
-      prMenu.push(...prItems(b.name, null));
+      prMenu.push(...prItems(b.name, null), ...pushItems(b.name));
       const r = remoteOf(b.name);
       if (r) seenRemote.add(r);
     }
@@ -1296,6 +1342,7 @@ export function App() {
         { label: `Merge into ${refs?.current ?? 'current branch'}`, disabled: isCurrent || !refs?.current, onClick: () => merge(item.name) },
         { label: 'Create branch here…', onClick: () => askBranch(item.name) },
         ...prItems(item.name, null),
+        ...pushItems(item.name),
         ...deleteItems(item.name, null),
       );
     } else if (item.kind === 'remote') {
@@ -1596,11 +1643,7 @@ export function App() {
         onUndo={() => void stepHistory('undo')}
         onRedo={() => void stepHistory('redo')}
         onPull={() => netAct('Pulling', () => git('pull'), { ok: (r) => conflictText('Pull', r) ?? 'Pull complete', undo: { label: 'Pull' } })}
-        onPush={() =>
-          netAct('Pushing', () => git<{ published?: string }>('push'), {
-            ok: (r) => ((r as { published?: string } | null)?.published ? `Pushed as the new branch ${(r as { published: string }).published}, which this branch now tracks` : 'Push complete'),
-          })
-        }
+        onPush={pushNow}
         onBranch={() => askBranch()}
         onStash={() => {
           if (!status?.files.length) return notify('Nothing to stash', true);

@@ -398,6 +398,30 @@ async function checkEditable(repo, hash) {
   return { head, later, branch: current ? current.slice(11) : null };
 }
 
+// ---- pushing ----
+
+const FORCE_LIST = 20; // remote commits named in the force push confirmation; the rest are only counted
+const COMMIT_ID_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+// "! [rejected] x -> x (non-fast-forward)" / "(fetch first)": the remote has commits this branch does not.
+// Not "[remote rejected]", which is a hook or permission refusing the push and which forcing cannot fix.
+const REJECTED_RE = /\[rejected\][^\n]*\((?:non-fast-forward|fetch first)\)|Updates were rejected because/i;
+
+/** A push the remote turned away because it has commits this branch lacks is tagged REJECTED:, so the UI can offer a force push. */
+function rejectedPush(e) {
+  return REJECTED_RE.test(e.message) && !e.message.startsWith('REJECTED:') ? new Error(`REJECTED: ${e.message}`) : e;
+}
+
+/** Where the current branch goes: its remote (else origin, else the first remote) and the branch of the same name there. */
+async function pushTarget(repo) {
+  const branch = (await run(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { okCodes: [0, 1] })).trim();
+  if (!branch) throw new Error('Cannot push a detached HEAD');
+  const configured = (await run(repo, ['config', '--get', `branch.${branch}.remote`], { okCodes: [0, 1] })).trim();
+  const remotes = (await run(repo, ['remote'])).split('\n').filter(Boolean);
+  const remote = remotes.includes(configured) ? configured : remotes.includes('origin') ? 'origin' : remotes[0];
+  if (!remote) throw new Error('This repository has no remote to push to');
+  return { branch, remote };
+}
+
 const handlers = {
   async openRepo({ path: p }) {
     assertRepo(p);
@@ -731,15 +755,87 @@ const handlers = {
         // A branch created from origin/main tracks origin/main, and git refuses to push it under a
         // different name. Publish it as its own branch on that remote (and track that) instead of
         // failing; main itself is never touched.
-        if (!branch || !/upstream branch of your current branch does not match\s+the name/i.test(e.message)) throw e;
+        if (!branch || !/upstream branch of your current branch does not match\s+the name/i.test(e.message)) {
+          throw rejectedPush(e);
+        }
         const remote = (await run(repo, ['config', '--get', `branch.${branch}.remote`], { okCodes: [0, 1] })).trim() || 'origin';
-        return publish(remote);
+        return publish(remote).catch((err) => {
+          throw rejectedPush(err);
+        });
       }
     }
     if (!branch) throw new Error('Cannot push a detached HEAD');
     const remotes = (await run(repo, ['remote'])).split('\n').filter(Boolean);
     if (remotes.length === 0) throw new Error('This repository has no remote to push to');
-    return publish(remotes.includes('origin') ? 'origin' : remotes[0]);
+    return publish(remotes.includes('origin') ? 'origin' : remotes[0]).catch((e) => {
+      throw rejectedPush(e);
+    });
+  },
+
+  // ---- replacing a branch on the remote (after a rebase, amend or edited message) ----
+
+  /**
+   * Looks at the remote's copy of the current branch, for the confirmation before a force push: fetches it, then
+   * says how it relates to the local branch and which commits of the remote's would be dropped.
+   */
+  async forcePushInfo({ repo }) {
+    assertRepo(repo);
+    const { branch, remote } = await pushTarget(repo);
+    const tracking = `refs/remotes/${remote}/${branch}`;
+    const head = (await run(repo, ['rev-parse', 'HEAD'])).trim();
+    const info = { branch, remote, head, remoteTip: null, relation: 'gone', lost: [], lostTotal: 0, localOnly: 0 };
+    try {
+      await run(repo, ['fetch', remote, `+refs/heads/${branch}:${tracking}`]);
+    } catch (e) {
+      if (/couldn't find remote ref/i.test(e.message)) return info; // not on the remote (any more): a normal push will do
+      throw e;
+    }
+    const remoteTip = (await run(repo, ['rev-parse', tracking])).trim();
+    const base = (await run(repo, ['merge-base', head, remoteTip], { okCodes: [0, 1] })).trim();
+    const relation = head === remoteTip ? 'same' : base === remoteTip ? 'ahead' : base === head ? 'behind' : 'diverged';
+    info.remoteTip = remoteTip;
+    info.relation = relation;
+    if (relation === 'diverged' || relation === 'behind') {
+      info.lostTotal = Number((await run(repo, ['rev-list', '--count', `${head}..${remoteTip}`])).trim());
+      const log = await run(repo, ['log', `--max-count=${FORCE_LIST}`, '--format=%H%x1f%an%x1f%ct%x1f%s', `${head}..${remoteTip}`]);
+      info.lost = log
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [hash, author, date, subject] = line.split('\x1f');
+          return { hash, author, date: Number(date), subject };
+        });
+    }
+    if (relation !== 'same' && relation !== 'behind') {
+      info.localOnly = Number((await run(repo, ['rev-list', '--count', `${remoteTip}..${head}`])).trim());
+    }
+    return info;
+  },
+
+  /**
+   * Replaces the remote's copy of the current branch with the local one. It only goes through if the remote branch is
+   * still at `expect` (the commit forcePushInfo showed) and the local branch is still at `head`, so nothing is
+   * overwritten that the user has not seen: if anyone pushed in the meantime git refuses and changes nothing.
+   */
+  async forcePush({ repo, head, expect }) {
+    assertRepo(repo);
+    if (!COMMIT_ID_RE.test(head || '') || !COMMIT_ID_RE.test(expect || '')) throw new Error('Invalid commit');
+    const { branch, remote } = await pushTarget(repo);
+    const now = (await run(repo, ['rev-parse', 'HEAD'])).trim();
+    if (now !== head) throw new Error('The branch has changed since the remote was checked. Check again before force pushing.');
+    const upstream = (await run(repo, ['rev-parse', '--abbrev-ref', '@{u}'], { okCodes: [0, 128] }).catch(() => '')).trim();
+    const args = ['push', `--force-with-lease=refs/heads/${branch}:${expect}`];
+    if (upstream !== `${remote}/${branch}`) args.push('-u'); // track the branch it now lives on
+    args.push(remote, `refs/heads/${branch}:refs/heads/${branch}`);
+    try {
+      await run(repo, args);
+    } catch (e) {
+      if (/stale info|remote ref updated since checkout|\(fetch first\)/i.test(e.message)) {
+        throw new Error(`${remote}/${branch} has changed since you looked at it, so nothing was overwritten. Check again to see what is new.`);
+      }
+      throw e;
+    }
+    return { pushed: `${remote}/${branch}` };
   },
 
   async checkout({ repo, ref, kind }) {
