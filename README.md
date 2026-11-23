@@ -48,7 +48,9 @@ branch pills show `↑` / `↓` for unpushed / unpulled commits, and a commit's 
 merge for every branch on it. Double-click a commit that has a branch label to check that branch out. If
 uncommitted changes block a checkout you are offered "Stash & checkout". Text in graph rows cannot be selected, so the
 double-click that checks out a branch never also highlights a word of its pill; the commit message in the details panel
-can still be selected and copied.
+can still be selected and copied. Everything that can be clicked (buttons, graph rows, sidebar items, file rows, repository
+tabs, the switches in Settings, the Amend checkbox) shows a pointer cursor and a hover highlight; `test/hover.test.mjs`
+checks this against the components, so a new clickable element cannot skip it. Disabled buttons keep the arrow.
 
 **GitHub accounts:** the toolbar's account button (profile picture and username) switches which saved account the
 repository uses. A switch sets the repository's `user.name`, `user.email` and
