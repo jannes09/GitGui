@@ -234,6 +234,15 @@ export interface PullRequest {
   /** comes from someone's fork, so its branch name is not one of this repository's branches */
   fork: boolean;
 }
+/** Where the repository's pages live, read from the remote's address alone (no network); provider is null for other hosts. */
+export interface RemoteWeb {
+  provider: 'github' | 'azure' | null;
+  remote?: string;
+  name?: string;
+  webUrl?: string;
+  listUrl?: string;
+}
+
 /** Open pull requests of the repository's GitHub / Azure DevOps remote; provider is null for other hosts. */
 export interface PullRequestInfo {
   provider: 'github' | 'azure' | null;

@@ -208,3 +208,31 @@ test('repositories on other hosts, or without a remote, simply have no pull requ
   assert.deepEqual((await call('pullRequests', { repo: makeRepo('https://gitlab.com/acme/widgets.git') })).data, { provider: null, prs: [] });
   assert.deepEqual((await call('pullRequests', { repo: makeRepo(null) })).data, { provider: null, prs: [] });
 });
+
+test('the remote\'s pages are read from its address alone, with no network and no login', async () => {
+  const gh = await call('remoteWeb', { repo: makeRepo('git@github.com:acme/widgets.git') });
+  assert.equal(gh.ok, true);
+  assert.deepEqual(gh.data, {
+    provider: 'github',
+    remote: 'origin',
+    name: 'acme/widgets',
+    webUrl: 'https://github.com/acme/widgets',
+    listUrl: 'https://github.com/acme/widgets/pulls',
+  });
+  const az = (await call('remoteWeb', { repo: makeRepo('https://acme@dev.azure.com/acme/My%20Project/_git/widgets') })).data;
+  assert.equal(az.provider, 'azure');
+  assert.equal(az.webUrl, 'https://dev.azure.com/acme/My%20Project/_git/widgets');
+});
+
+test('the remote\'s pages: other hosts and repositories without a remote have none', async () => {
+  assert.deepEqual((await call('remoteWeb', { repo: makeRepo('https://example.com/acme/widgets.git') })).data, { provider: null });
+  assert.deepEqual((await call('remoteWeb', { repo: makeRepo(null) })).data, { provider: null });
+});
+
+test('origin is preferred when several remotes are hosted somewhere we know', async () => {
+  const repo = makeRepo('https://github.com/acme/widgets.git');
+  git(repo, 'remote', 'add', 'upstream', 'https://github.com/other/widgets.git');
+  const web = (await call('remoteWeb', { repo })).data;
+  assert.equal(web.remote, 'origin');
+  assert.equal(web.name, 'acme/widgets');
+});

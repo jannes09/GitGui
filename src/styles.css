@@ -139,7 +139,7 @@ body.resizing * { cursor: col-resize !important; }
 .sb-count { margin-left: auto; background: var(--bg-raised); border-radius: 9px; padding: 0 7px; font-size: 10.5px; font-weight: 600; }
 .sb-item {
   display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 12px 0 32px;
-  cursor: default; user-select: none;
+  cursor: pointer; user-select: none;
 }
 .sb-item.nested { padding-left: 46px; }
 .sb-item:hover { background: var(--bg-hover); }
@@ -163,7 +163,7 @@ body.resizing * { cursor: col-resize !important; }
 .g-row {
   position: absolute; left: 0; right: 0;
   display: grid; grid-template-columns: var(--cols); align-items: center;
-  cursor: default;
+  cursor: pointer;
   user-select: none; /* a double-click checks out a branch: it must not also highlight the word under the pointer */
 }
 .g-row:hover { background: var(--bg-hover); }
@@ -199,7 +199,7 @@ body.resizing * { cursor: col-resize !important; }
   border-bottom: 1px solid var(--border);
 }
 .rp-none { padding: 10px 14px; color: var(--text-dim); font-size: 12px; }
-.f-row { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 12px; cursor: default; }
+.f-row { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 12px; cursor: pointer; }
 .f-row:hover { background: var(--bg-hover); }
 .f-row.active { background: var(--bg-select); box-shadow: inset 2px 0 0 var(--accent); }
 .f-name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
@@ -243,6 +243,8 @@ body.resizing * { cursor: col-resize !important; }
 .cd-date { color: var(--text-dim); font-size: 12px; }
 .cd-hashes { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 14px 10px; color: var(--text-dim); font-size: 12px; }
 .cd-hashes code { color: var(--text); }
+.cd-links { padding: 0 14px 10px; }
+.cd-pr { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); }
 .dim { color: var(--text-dim); }
 
 .commit-box { flex: none; padding: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; background: var(--bg-panel); }
@@ -256,7 +258,10 @@ body.resizing * { cursor: col-resize !important; }
 .commit-box textarea { resize: vertical; min-height: 96px; max-height: 260px; }
 .counter { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--text-dim); }
 .counter.over { color: var(--danger); }
-.check { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 12px; }
+.check { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 12px; cursor: pointer; }
+.check:hover { color: var(--text); }
+input[type='checkbox'], input[type='radio'] { cursor: pointer; }
+input[type='checkbox']:disabled, input[type='radio']:disabled { cursor: default; }
 .hint { text-align: center; font-size: 11px; color: var(--text-dim); }
 
 /* ---------- buttons ---------- */
@@ -384,7 +389,7 @@ body.resizing * { cursor: col-resize !important; }
   position: relative; flex: 0 1 190px; min-width: 96px; height: 29px;
   display: flex; align-items: center; gap: 7px; padding: 0 6px 0 11px;
   background: transparent; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0;
-  color: var(--text-dim); cursor: default; user-select: none; outline: 0;
+  color: var(--text-dim); cursor: pointer; user-select: none; outline: 0;
 }
 .rt-tab:hover { background: var(--bg-raised); color: var(--text); }
 .rt-tab:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
@@ -547,7 +552,8 @@ body.resizing * { cursor: col-resize !important; }
 .tb-gear { display: grid; place-items: center; width: 34px; height: 34px; background: none; border: 1px solid transparent; border-radius: 6px; color: var(--text-dim); }
 .tb-gear:hover { background: var(--bg-hover); color: var(--text); }
 /* the global .modal label / .modal input rules would stretch these rows */
-.modal .set-row { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 2px 0; color: var(--text); font-size: 13px; }
+.modal .set-row { display: flex; align-items: flex-start; gap: 10px; margin: 0 -6px; padding: 2px 6px; border-radius: 6px; color: var(--text); font-size: 13px; }
+.modal .set-row:hover { background: var(--bg-hover); }
 .modal .set-row input { width: auto; padding: 0; margin: 3px 0 0; border: 0; background: none; flex: none; }
 .modal .set-group { min-width: 0; }
 .lane-tip {

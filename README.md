@@ -48,7 +48,9 @@ branch pills show `↑` / `↓` for unpushed / unpulled commits, and a commit's 
 merge for every branch on it. Double-click a commit that has a branch label to check that branch out. If
 uncommitted changes block a checkout you are offered "Stash & checkout". Text in graph rows cannot be selected, so the
 double-click that checks out a branch never also highlights a word of its pill; the commit message in the details panel
-can still be selected and copied.
+can still be selected and copied. Everything that can be clicked (buttons, graph rows, sidebar items, file rows, repository
+tabs, the switches in Settings, the Amend checkbox) shows a pointer cursor and a hover highlight; `test/hover.test.mjs`
+checks this against the components, so a new clickable element cannot skip it. Disabled buttons keep the arrow.
 
 **GitHub accounts:** the toolbar's account button (profile picture and username) switches which saved account the
 repository uses. A switch sets the repository's `user.name`, `user.email` and
@@ -72,6 +74,12 @@ login Git Credential Manager already holds for that host (asked for without any 
 minutes, sent only to `api.github.com` / `dev.azure.com`); without a login only public repositories work. They run
 when a repository opens, after Fetch, and when the window regains focus (at most every 20 s with a login, 2 min
 without). Other hosts simply show no badges.
+
+**The pull request a commit was merged by:** a commit whose message says it came in through a pull request ("Merge pull
+request #6 from user/branch" or a squash merge's "Title (#6)" on GitHub, "Merged PR 6: Title" on Azure DevOps) gets a
+"Pull request #6" button in the commit details, under the hashes, and "Open pull request #6…" in its right-click menu.
+Both open the pull request's page in your browser. The address is worked out from the remote's URL alone, so this needs no
+login or network and still works with the pull request lookups switched off.
 
 **Author pictures:** the round avatar on a commit in the graph, and the one in the commit details, show the author's
 profile picture when one can be found, and their initials otherwise. A picture is found without asking anyone for an
@@ -97,7 +105,9 @@ there too):
 
 1. **Bold main lanes:** main lanes are thicker, with bigger commit dots.
 2. **Pin to the left:** the topmost main branch always sits in the first lane, so it is one straight column that
-   feature branches never push aside (a branch cut from its newest commit joins it instead of taking its place).
+   feature branches never push aside (a branch cut from its newest commit joins it instead of taking its place). The
+   uncommitted-changes (WIP) circle sits straight above the tip of that line when that commit is checked out; with
+   another commit or branch checked out it keeps a lane of its own.
 3. **Band and bold text:** a soft band behind the main lanes, only along the main line itself, and commit messages on
    the main line in bold.
 4. **Colour and labels:** main branches keep a fixed colour (dev teal, main / master gold, other main branches purple),

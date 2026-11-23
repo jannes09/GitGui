@@ -123,6 +123,17 @@ export function findMainLines(commits: Commit[], tips: { name: string; hash: str
   return { main, primary };
 }
 
+/**
+ * The commits that may use lane 0 when the main line is pinned there. The uncommitted changes (the WIP row) join it
+ * when the commit they sit on is the tip of the line: nothing else can be above the tip in lane 0 anyway, so WIP goes
+ * straight above its commit instead of one lane to the right with a curve back into it. Anywhere else (another
+ * branch checked out, a commit further down the line) the lane above is not free and WIP keeps a lane of its own.
+ */
+export function pinWithWip(primary: Set<string>, wipParent: string | null | undefined): Set<string> {
+  const tip = primary.values().next().value; // a line is stored from its tip downwards
+  return wipParent && tip === wipParent ? new Set([WIP_HASH, ...primary]) : primary;
+}
+
 /** A stable number for a string, used to give the same branch the same colour every time. */
 function hashName(s: string): number {
   let h = 5381;
@@ -253,12 +264,24 @@ export function computeGraph(commits: Commit[], opts: GraphOptions = {}): GraphD
     let col: number;
     // The pinned line always sits in lane 0, even when another lane was waiting for its commit
     // (a feature branch cut from the main tip, a stash): those lanes then curve into lane 0.
+    // A main commit that lands on an ordinary lane (a feature branch was cut from it, or the WIP row sits straight
+    // above it in lane 0) turns that lane into the main line from here on, with the main line's colour.
+    const turnIntoMainLine = (lane: number) => {
+      if (!(isMain(c.hash) && fixedColors)) return;
+      const now = laneRun[lane]!;
+      if (!now.fixed || now.color !== fixedColors(main!.get(c.hash)!)) {
+        now.end = r;
+        laneRun[lane] = newRun(c.hash, r);
+      }
+    };
     if (pin && pin.has(c.hash) && (waiting.includes(0) || lanes[0] === null || lanes[0] === undefined)) {
       col = 0;
       while (lanes.length === 0) lanes.push(null);
       if (!waiting.includes(0)) {
         laneRun[0] = newRun(c.hash, r);
         laneName[0] = undefined;
+      } else {
+        turnIntoMainLine(0);
       }
     } else if (waiting.length === 0) {
       col = firstFree(startFor(c.hash));
@@ -266,14 +289,7 @@ export function computeGraph(commits: Commit[], opts: GraphOptions = {}): GraphD
       laneName[col] = undefined;
     } else {
       col = waiting[0];
-      // a main commit that lands on an ordinary lane (a feature branch was cut from it) turns it into the main line
-      if (isMain(c.hash) && fixedColors) {
-        const now = laneRun[col]!;
-        if (!now.fixed || now.color !== fixedColors(main!.get(c.hash)!)) {
-          now.end = r;
-          laneRun[col] = newRun(c.hash, r);
-        }
-      }
+      turnIntoMainLine(col);
     }
     const run = laneRun[col]!;
     const onMain = isMain(c.hash);
