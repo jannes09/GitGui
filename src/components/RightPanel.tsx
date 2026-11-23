@@ -114,9 +114,12 @@ interface CommitPanelProps {
   onEdit?: () => void;
   /** why the message cannot be edited right now (pushed, on another branch, an operation in progress), if so */
   editBlocked?: string | null;
+  /** the pull request this commit was merged by, when its message says so and the remote's pages are known */
+  pr?: { number: number; url: string } | null;
+  onOpenPr?: (url: string) => void;
 }
 
-export function CommitPanel({ repo, hash, active, onOpen, onError, onEdit, editBlocked }: CommitPanelProps) {
+export function CommitPanel({ repo, hash, active, onOpen, onError, onEdit, editBlocked, pr, onOpenPr }: CommitPanelProps) {
   const [detail, setDetail] = useState<CommitDetail | null>(null);
   const [files, setFiles] = useState<CommitFile[]>([]);
 
@@ -177,6 +180,14 @@ export function CommitPanel({ repo, hash, active, onOpen, onError, onEdit, editB
             </span>
           ))}
         </div>
+        {pr && onOpenPr && (
+          <div className="cd-links">
+            <button className="btn small cd-pr" onClick={() => onOpenPr(pr.url)} title={`Open pull request #${pr.number} in your browser`}>
+              <Icon name="pr" size={12} />
+              Pull request #{pr.number}
+            </button>
+          </div>
+        )}
         <div className="rp-section">
           <span>{files.length} changed file{files.length === 1 ? '' : 's'}</span>
         </div>

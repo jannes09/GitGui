@@ -243,6 +243,8 @@ body.resizing * { cursor: col-resize !important; }
 .cd-date { color: var(--text-dim); font-size: 12px; }
 .cd-hashes { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 14px 10px; color: var(--text-dim); font-size: 12px; }
 .cd-hashes code { color: var(--text); }
+.cd-links { padding: 0 14px 10px; }
+.cd-pr { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); }
 .dim { color: var(--text-dim); }
 
 .commit-box { flex: none; padding: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; background: var(--bg-panel); }

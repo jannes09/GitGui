@@ -14,9 +14,9 @@ import { CommitPanel, StagingPanel } from './components/RightPanel';
 import { Sidebar, type SidebarItem } from './components/Sidebar';
 import { Toolbar } from './components/Toolbar';
 import { basename, parseTrack, samePath } from './util';
-import { createPrUrl, isSafePrUrl, publishedName } from './pullRequests';
+import { createPrUrl, isSafePrUrl, mergedPrNumber, publishedName, pullRequestUrl } from './pullRequests';
 import { forcePushNotice, forcePushText } from './forcePush';
-import { DEFAULT_REFS_W, MAIN_COLOR_BY_GROUP, WIP_HASH, computeGraph, findMainLines } from './graph';
+import { DEFAULT_REFS_W, MAIN_COLOR_BY_GROUP, WIP_HASH, computeGraph, findMainLines, pinWithWip } from './graph';
 import { PictureSourcesProvider } from './components/AuthorPicture';
 import { SettingsDialog } from './components/SettingsDialog';
 import type { PictureSources } from './avatars';
@@ -37,6 +37,7 @@ import type {
   PullRequest,
   PullRequestInfo,
   RefsData,
+  RemoteWeb,
   RepoSnapshot,
   RewordResult,
   Selection,
@@ -140,6 +141,7 @@ export function App() {
   const [accounts, setAccounts] = useState<AccountsData | null>(null);
   const [activeAcct, setActiveAcct] = useState<ActiveAccount | null>(null);
   const [prInfo, setPrInfo] = useState<PullRequestInfo | null>(null);
+  const [web, setWeb] = useState<RemoteWeb | null>(null); // the remote's pages, for a merge commit's pull request shortcut
   const lastPr = useRef({ root: '', at: 0, authenticated: false });
   const [acctDialog, setAcctDialog] = useState(false);
   const [settings, setSettings] = useState<Settings>(readSettings);
@@ -338,6 +340,7 @@ export function App() {
         setRepo(info);
         setActiveAcct(null);
         setPrInfo(null);
+        setWeb(null);
         void loadActive(info.root);
         setRefs(null);
         setStatus(null);
@@ -448,6 +451,21 @@ export function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // where the remote's pages live: from its address alone, so it is cheap and needs no login or lookups setting
+  const remotesKey = (refs?.remotes ?? []).join('|');
+  useEffect(() => {
+    const root = repo?.root;
+    if (!root || !refs) return;
+    let live = true;
+    call<RemoteWeb>('remoteWeb', { repo: root })
+      .then((w) => live && repoRef.current === root && setWeb(w))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo?.root, !!refs, remotesKey]);
 
   // (re)load pull requests when a repository has been read, and when its set of remote branches changes
   const remoteKey = (refs?.remoteBranches ?? []).map((r) => r.name).join('|');
@@ -1012,6 +1030,15 @@ export function App() {
   };
   const openPr = (pr: PullRequest) => openUrl(pr.url);
 
+  // The pull request a commit was merged by ("Merge pull request #6 from…", "Title (#6)", "Merged PR 6: …"), with its page.
+  const mergedPrOf = (hash: string | undefined): { number: number; url: string } | null => {
+    const host = prInfo?.provider ? prInfo : web;
+    if (!hash || !host?.provider) return null;
+    const number = mergedPrNumber(commits.find((c) => c.hash === hash)?.subject, host.provider);
+    const url = number ? pullRequestUrl(host, number) : null;
+    return number && url ? { number, url } : null;
+  };
+
   // "Open pull request #N" for a branch that has one, or "Create pull request" for a pushed branch that has none.
   const prItems = (localIn: string | null, remoteIn: string | null): MenuItem[] => {
     if (!prInfo?.provider) return [];
@@ -1123,7 +1150,8 @@ export function App() {
 
   const graph = useMemo(() => {
     const list = [...withStashes];
-    if (status && status.files.length > 0) {
+    const hasWip = !!status && status.files.length > 0;
+    if (hasWip) {
       list.unshift({
         hash: WIP_HASH,
         parents: refs?.head ? [refs.head] : [],
@@ -1136,7 +1164,7 @@ export function App() {
     }
     return computeGraph(list, {
       main: mainLines?.main,
-      pin: settings.lanePin && mainLines && mainLines.primary.size > 0 ? mainLines.primary : undefined,
+      pin: settings.lanePin && mainLines && mainLines.primary.size > 0 ? pinWithWip(mainLines.primary, hasWip ? refs?.head : null) : undefined,
       fixedColors: settings.fixedColors ? (name) => MAIN_COLOR_BY_GROUP[branchGroup(name)] : undefined,
       remotes: refs?.remotes,
     });
@@ -1251,6 +1279,8 @@ export function App() {
     }
     // pull requests of the branches here, written next to the branch operations
     const prMenu: MenuItem[] = [];
+    const merged = mergedPrOf(hash); // and the one this commit was merged by
+    if (merged) prMenu.push({ label: `Open pull request #${merged.number}…`, title: 'The pull request this commit was merged by', onClick: () => openUrl(merged.url) });
     const seenRemote = new Set<string>();
     for (const b of refs?.branches ?? []) {
       if (b.hash !== hash) continue;
@@ -1783,6 +1813,8 @@ export function App() {
                 onError={notifyError}
                 onEdit={sel.kind === 'commit' ? () => void openEditMessage(sel.hash) : undefined}
                 editBlocked={editBlocked(sel.hash)}
+                pr={sel.kind === 'commit' ? mergedPrOf(sel.hash) : null}
+                onOpenPr={openUrl}
               />
             ) : (
               <div className="rp-empty">Select a commit to see its details</div>

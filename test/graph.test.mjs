@@ -354,3 +354,73 @@ test('loading older history can recolour a lane when it brings in a lower branch
   assert.equal(colorOf(computeGraph(recent), 'N2'), alone('feature/new'));
   assert.equal(colorOf(computeGraph(older), 'N2'), alone('feature/old'));
 });
+
+// ---- the WIP row (uncommitted changes) sits straight above its commit when that is the tip of the pinned main line ----
+
+import { WIP_HASH, pinWithWip } from '../src/graph.ts';
+
+// dev's tip is a merge (second parent on a feature lane), a telemetry branch runs beside, and there are uncommitted changes
+const wipHistory = [
+  { ...c(WIP_HASH, 'M'), subject: '// WIP' },
+  { ...tip('M', 'HEAD -> feature/asset, origin/dev, dev', 'C2', 'N2'), subject: 'Merged PR 1704' },
+  tip('T2', 'feature/telemetry', 'T1'),
+  c('T1', 'C2'),
+  tip('N2', 'feature/nozzle', 'N1'),
+  c('N1', 'C2'),
+  c('C2', 'C1'),
+  c('C1'),
+];
+const wipGraph = (list, head) => {
+  const { main, primary } = findMainLines(list, [{ name: 'dev', hash: 'M' }]);
+  const pin = pinWithWip(primary, head);
+  return { g: computeGraph(list, { main, pin, fixedColors: signature }), primary, pin };
+};
+const rowOf = (g, h) => g.rows.find((r) => r.commit.hash === h);
+
+test('WIP sits in lane 0, straight above the tip of the pinned main line', () => {
+  const { g } = wipGraph(wipHistory, 'M');
+  assert.equal(rowOf(g, WIP_HASH).col, 0);
+  assert.equal(rowOf(g, 'M').col, 0);
+  assert.deepEqual(rowOf(g, WIP_HASH).segs.map((s) => [s.x1, s.y1, s.x2, s.y2]), [[0, 0.5, 0, 1]], 'a straight line down');
+  const into = rowOf(g, 'M').segs.filter((s) => s.y1 === 0);
+  assert.deepEqual(into.map((s) => [s.x1, s.x2]), [[0, 0]], 'nothing curves into the commit from another lane');
+});
+
+test('the other branches still keep out of lane 0, and the main line below is unchanged', () => {
+  const { g } = wipGraph(wipHistory, 'M');
+  for (const h of ['T2', 'T1', 'N2', 'N1']) assert.ok(rowOf(g, h).col >= 1, `${h} must not use lane 0`);
+  for (const h of ['M', 'C2', 'C1']) assert.equal(rowOf(g, h).col, 0, `${h} stays on the main line`);
+  assert.equal(rowOf(g, 'M').color, signature('dev'));
+});
+
+test('the WIP line has a colour of its own, and the commit below keeps the main colour', () => {
+  const { g } = wipGraph(wipHistory, 'M');
+  const wip = rowOf(g, WIP_HASH);
+  assert.ok(!MAIN_COLOR_BY_GROUP.includes(wip.color), 'not a main colour');
+  assert.equal(rowOf(g, 'M').segs.find((s) => s.y1 === 0).color, wip.color, 'the line into the commit is the WIP line');
+});
+
+test('WIP only joins the pinned line at its tip: elsewhere it keeps a lane of its own', () => {
+  const { primary } = wipGraph(wipHistory, 'M');
+  assert.equal(pinWithWip(primary, 'C2'), primary, 'a commit lower down the line');
+  assert.equal(pinWithWip(primary, 'N2'), primary, 'a commit on another branch');
+  assert.equal(pinWithWip(primary, null), primary, 'no uncommitted changes');
+  assert.equal(pinWithWip(primary, undefined), primary);
+  const joined = pinWithWip(primary, 'M');
+  assert.ok(joined.has(WIP_HASH));
+  assert.deepEqual([...joined].filter((h) => h !== WIP_HASH), [...primary], 'the line itself is unchanged');
+  assert.equal(primary.has(WIP_HASH), false, 'the original set is not modified');
+
+  // HEAD on a branch that is not the main line: WIP is a feature lane, as before
+  const { g } = wipGraph([{ ...c(WIP_HASH, 'N2'), subject: '// WIP' }, ...wipHistory.slice(1)], 'N2');
+  assert.ok(rowOf(g, WIP_HASH).col >= 1);
+  assert.equal(rowOf(g, 'M').col, 0);
+});
+
+test('a stash made on the tip still stays out of lane 0', () => {
+  const stash = { ...c('S', 'M'), stashRef: 'stash@{0}' };
+  const { g } = wipGraph([{ ...c(WIP_HASH, 'M'), subject: '// WIP' }, stash, ...wipHistory.slice(1)], 'M');
+  assert.equal(rowOf(g, WIP_HASH).col, 0);
+  assert.ok(rowOf(g, 'S').col >= 1);
+  assert.equal(rowOf(g, 'M').col, 0);
+});

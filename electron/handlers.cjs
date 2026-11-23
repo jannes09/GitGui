@@ -422,6 +422,17 @@ async function pushTarget(repo) {
   return { branch, remote };
 }
 
+/** The remote that is hosted on GitHub or Azure DevOps (origin first), with the addresses worked out from its URL. */
+async function hostedRemote(repo) {
+  const remotes = (await run(repo, ['remote', '-v']).catch(() => ''))
+    .split('\n')
+    .map((l) => /^(\S+)\s+(\S+)\s+\(fetch\)$/.exec(l.trim()))
+    .filter(Boolean)
+    .map((m) => ({ name: m[1], url: m[2] }));
+  remotes.sort((a, b) => (a.name === 'origin' ? -1 : 0) - (b.name === 'origin' ? -1 : 0));
+  return remotes.map((r) => ({ remote: r.name, info: parseRemoteUrl(r.url) })).find((r) => r.info) ?? null;
+}
+
 const handlers = {
   async openRepo({ path: p }) {
     assertRepo(p);
@@ -1022,14 +1033,7 @@ const handlers = {
   // kept in memory for a couple of minutes, and sent only to the provider's own API.
   async pullRequests({ repo }) {
     assertRepo(repo);
-    const remotes = (await run(repo, ['remote', '-v']).catch(() => ''))
-      .split('\n')
-      .map((l) => /^(\S+)\s+(\S+)\s+\(fetch\)$/.exec(l.trim()))
-      .filter(Boolean)
-      .map((m) => ({ name: m[1], url: m[2] }));
-    // origin first, then any other remote that is hosted somewhere we know
-    remotes.sort((a, b) => (a.name === 'origin' ? -1 : 0) - (b.name === 'origin' ? -1 : 0));
-    const found = remotes.map((r) => ({ remote: r.name, info: parseRemoteUrl(r.url) })).find((r) => r.info);
+    const found = await hostedRemote(repo);
     if (!found) return { provider: null, prs: [] };
     const { info, remote } = found;
 
@@ -1045,6 +1049,16 @@ const handlers = {
       error: result.error || null,
       authenticated: result.authenticated,
     };
+  },
+
+  // Where this repository's pages live (GitHub / Azure DevOps), read from the remote's address alone: no network, no
+  // login. It is what a merge commit's "pull request #N" shortcut needs, so it works with the lookups switched off.
+  async remoteWeb({ repo }) {
+    assertRepo(repo);
+    const found = await hostedRemote(repo);
+    if (!found) return { provider: null };
+    const { info, remote } = found;
+    return { provider: info.provider, remote, name: info.name, webUrl: info.webUrl, listUrl: info.listUrl };
   },
 
   async accountsList() {
