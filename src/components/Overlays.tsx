@@ -67,6 +67,8 @@ export interface ConfirmSpec {
   danger?: boolean;
   /** e.g. a file path, shown in full (wrapped) in a box of its own */
   detail?: string;
+  /** explanation shown under the detail box */
+  note?: string;
 }
 
 export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: () => void }) {
@@ -87,6 +89,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
         <h3>{spec.title}</h3>
         <p className="modal-text">{spec.message}</p>
         {spec.detail && <code className="modal-detail">{spec.detail}</code>}
+        {spec.note && <p className="modal-text small modal-note">{spec.note}</p>}
         <div className="modal-actions">
           <button ref={cancelBtn} className="btn" onClick={onClose}>
             Cancel
