@@ -69,6 +69,8 @@ export interface ConfirmSpec {
   detail?: string;
   /** explanation shown under the detail box */
   note?: string;
+  /** a third choice between Cancel and the confirm button (it closes the dialog too) */
+  alt?: { label: string; onClick: () => void };
 }
 
 export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: () => void }) {
@@ -79,7 +81,7 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
-        className="modal"
+        className={'modal' + (spec.alt ? ' confirm-alt' : '')}
         role="dialog"
         aria-modal="true"
         aria-label={spec.title}
@@ -94,6 +96,17 @@ export function ConfirmDialog({ spec, onClose }: { spec: ConfirmSpec; onClose: (
           <button ref={cancelBtn} className="btn" onClick={onClose}>
             Cancel
           </button>
+          {spec.alt && (
+            <button
+              className="btn"
+              onClick={() => {
+                onClose();
+                spec.alt!.onClick();
+              }}
+            >
+              {spec.alt.label}
+            </button>
+          )}
           <button
             ref={confirmBtn}
             className={'btn ' + (spec.danger ? 'destructive' : 'primary')}
