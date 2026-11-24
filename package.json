@@ -53,7 +53,8 @@
     "nsis": {
       "artifactName": "GitGui-Setup-${version}.${ext}",
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": false
     }
   }
 }
