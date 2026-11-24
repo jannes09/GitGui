@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const handlers = require('./handlers.cjs');
 const updates = require('./updates.cjs');
+const { createRepoWatcher } = require('./watcher.cjs');
 const { splashHtml } = require('./splash-page.cjs');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || '';
@@ -114,6 +115,30 @@ function createWindow() {
     if (splash && !splash.isDestroyed()) splash.close();
   });
 
+  // Tell the page when one of its open repositories changes on disk, so it refreshes even while unfocused.
+  // The page says which repositories are open (watch:set) whenever its tabs change.
+  const contentsId = win.webContents.id;
+  const watcher = createRepoWatcher(
+    (root) => {
+      if (!win.isDestroyed()) win.webContents.send('repo:changed', root);
+    },
+    {
+      // what git ignores, so build output is not mistaken for a change (and a tracked folder called bin is not missed)
+      loadIgnored: async (root) => {
+        const r = await handlers.call('ignoredPaths', { repo: root });
+        return r.ok ? r.data : null;
+      },
+    },
+  );
+  watchers.set(contentsId, watcher);
+  win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) watcher.set([]); // a reload: the page asks again once loaded
+  });
+  win.on('closed', () => {
+    watcher.close();
+    watchers.delete(contentsId);
+  });
+
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
@@ -143,6 +168,16 @@ function createWindow() {
   if (DEV_URL) win.loadURL(DEV_URL);
   else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 }
+
+const watchers = new Map(); // webContents id -> repository watcher of that window
+
+ipcMain.handle('watch:set', (event, roots) => {
+  if (!isTrusted(event.senderFrame ? event.senderFrame.url : '')) return false;
+  const watcher = watchers.get(event.sender.id);
+  if (!watcher) return false;
+  watcher.set(Array.isArray(roots) ? roots.slice(0, 64) : []);
+  return true;
+});
 
 ipcMain.handle('git:call', (event, method, args) => {
   if (!isTrusted(event.senderFrame ? event.senderFrame.url : '')) return { ok: false, error: 'Untrusted caller' };
@@ -183,6 +218,11 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  for (const w of watchers.values()) w.close();
+  watchers.clear();
 });
 
 app.on('window-all-closed', () => {

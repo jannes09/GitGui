@@ -422,6 +422,8 @@ async function pushTarget(repo) {
   return { branch, remote };
 }
 
+const IGNORED_MAX = 20000; // ignored folders / files named to the watcher, each
+
 /** The remote that is hosted on GitHub or Azure DevOps (origin first), with the addresses worked out from its URL. */
 async function hostedRemote(repo) {
   const remotes = (await run(repo, ['remote', '-v']).catch(() => ''))
@@ -1049,6 +1051,17 @@ const handlers = {
       error: result.error || null,
       authenticated: result.authenticated,
     };
+  },
+
+  // What git ignores in this working tree, for the file watcher: whole ignored folders (git does not walk into them,
+  // so this is quick even beside a node_modules) and single ignored files. A tracked file is never in it.
+  async ignoredPaths({ repo }) {
+    assertRepo(repo);
+    const out = await run(repo, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']);
+    const dirs = [];
+    const files = [];
+    for (const p of out.split('\0')) if (p) (p.endsWith('/') ? dirs : files).push(p);
+    return { dirs: dirs.slice(0, IGNORED_MAX), files: files.slice(0, IGNORED_MAX) }; // past the cap a path just counts as changed
   },
 
   // Where this repository's pages live (GitHub / Azure DevOps), read from the remote's address alone: no network, no

@@ -6,6 +6,8 @@ declare global {
       call: (method: string, args: object) => Promise<Reply>;
       pickFolder: (title?: string) => Promise<string | null>;
       installUpdate: (folder: string, version: string) => Promise<Reply>;
+      watchRepos?: (roots: string[]) => Promise<boolean>;
+      onRepoChanged?: (cb: (root: string) => void) => () => void;
     };
   }
 }
@@ -31,6 +33,16 @@ export async function call<T = void>(method: string, args: object = {}): Promise
 
 export async function pickFolder(title?: string): Promise<string | null> {
   return window.gitApi ? window.gitApi.pickFolder(title) : null;
+}
+
+/** Asks the desktop app to watch these repositories for changes on disk (none in a plain browser). */
+export function watchRepos(roots: string[]): void {
+  void window.gitApi?.watchRepos?.(roots).catch(() => {});
+}
+
+/** Calls `cb` with a repository's root when it changed on disk. Returns the function that stops listening. */
+export function onRepoChanged(cb: (root: string) => void): () => void {
+  return window.gitApi?.onRepoChanged?.(cb) ?? (() => {});
 }
 
 /**
