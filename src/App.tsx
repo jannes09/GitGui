@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { call, installUpdate, isElectron, pickFolder } from './api';
+import { call, installUpdate, isElectron, onRepoChanged, pickFolder, watchRepos } from './api';
 import { ConflictView } from './components/ConflictView';
 import { DetachedBanner } from './components/DetachedBanner';
 import { OperationBanner } from './components/OperationBanner';
@@ -432,6 +432,50 @@ export function App() {
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [reload, loadActive, refreshTabs, loadPrs]);
+
+  // The desktop app watches every open tab's folder and says when one changed on disk (a terminal, an editor,
+  // another tool), so the window stays current even while it is in the background.
+  const watchKey = JSON.stringify([...tabs.map((t) => t.root), repo?.root ?? ''].filter(Boolean));
+  useEffect(() => watchRepos(JSON.parse(watchKey) as string[]), [watchKey]);
+
+  const watchRun = useRef<{ running: boolean; again: Set<string> }>({ running: false, again: new Set() });
+  useEffect(() => {
+    const refresh = async (root: string) => {
+      const active = repoRef.current;
+      if (active && samePath(root, active)) {
+        // an operation of the app's own is running and reloads when it is done, which covers this change
+        if (busyRef.current) return;
+        // refs and status only: which account is active comes from git config and the remotes, which a changed file
+        // cannot alter (the focus refresh still re-reads it)
+        await reload(active).catch(() => {});
+      } else if (tabsRef.current.some((t) => samePath(t.root, root))) {
+        let info: TabInfo;
+        try {
+          info = summarize(await call<StatusData>('status', { repo: root }));
+        } catch {
+          info = { branch: null, changes: 0, conflicts: 0, missing: true };
+        }
+        setTabInfo((prev) => ({ ...prev, [root]: info }));
+      }
+    };
+    // one refresh at a time: changes that arrive meanwhile are read once it finishes
+    const onChanged = async (root: string) => {
+      const run = watchRun.current;
+      run.again.add(root);
+      if (run.running) return;
+      run.running = true;
+      try {
+        while (run.again.size) {
+          const next = [...run.again];
+          run.again.clear();
+          for (const r of next) await refresh(r);
+        }
+      } finally {
+        run.running = false;
+      }
+    };
+    return onRepoChanged((root) => void onChanged(root));
+  }, [reload]);
 
   // turning the pull request lookups off clears the badges; turning them on fetches them
   useEffect(() => {

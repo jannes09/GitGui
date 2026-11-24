@@ -24,6 +24,7 @@ Backend changes (`electron/handlers.cjs`) are only picked up after restarting `n
 - `electron/handlers.cjs` – every git operation (the only place that spawns git)
 - `electron/main.cjs`, `preload.cjs` – window and the IPC bridge
 - `electron/updates.cjs` – finds and verifies a newer build in a local folder
+- `electron/watcher.cjs` – watches the open repositories on disk and tells the window when one changed
 - `src/graph.ts` – lane assignment for the commit graph
 - `src/components/` – toolbar, sidebar, graph, diff view, commit/staging panel
 
@@ -126,6 +127,21 @@ labels on the lane's newest commit, or from a merge message ("Merge branch 'x'",
 lanes of branches that were deleted without such a message have no name.
 
 The settings page also has the switch for the pull request lookups.
+
+**Refreshing when something changes on disk:** the desktop app watches the folder of every open tab and, about a second
+after something outside the app changes a repository (a terminal, an editor, a build tool, another Git client), refreshes
+the graph, the branches and the changes list. Tabs that are not showing get their badge updated, and it works while the
+window is in the background; refreshing when the window regains focus stays as a fallback. A burst of changes is merged
+into one refresh (never more than one every 2 s however many files change), and what git itself writes that cannot change
+anything shown (objects, lock files) is skipped. So is everything git ignores: the app asks git which folders and files
+it ignores (`git ls-files --ignored`) and asks again when `.gitignore` changes, when a new top-level folder appears, and
+at most once a minute while changes keep coming. A `build/` or `out/` folder never causes a refresh, whatever it is
+called, while a tracked file in a folder called `bin/` does. Until git has answered, and if it cannot, a short list of
+well-known generated folders (`node_modules`, `bin`, `obj`, `dist` …) stands in. While the app runs an operation of its
+own it does not refresh on top of it; its own reload covers the change, and the watcher's late report of the same change
+costs one more quick read (branches and status, not the history). If a watched folder is deleted or moved away the tab
+shows as missing (the folder is checked every 5 s), and watching starts again by itself when it comes back. This needs the
+desktop app: the browser dev mode (`npm run web`) refreshes on focus only.
 
 **Editing commit messages:** right-click a commit and choose "Edit commit message…", or click the pencil beside its
 summary in the details panel, to change its summary and description (Enter in the summary jumps to the description,
