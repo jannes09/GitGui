@@ -146,6 +146,24 @@ export interface UpdateInfo {
   error: string | null;
 }
 
+/** How a remote branch relates to the local branch of the same name, asked before the remote branch is checked out. */
+export interface RemoteCheckoutInfo {
+  /** the local branch of the same name, which may not exist yet */
+  local: string;
+  remote: string;
+  localHash: string | null;
+  remoteHash: string;
+  /** commits only the local branch has / only the remote one has */
+  ahead: number;
+  behind: number;
+  /** none = no local branch yet, same = both on one commit */
+  relation: 'none' | 'same' | 'behind' | 'ahead' | 'diverged';
+  /** the local branch is the one that is checked out */
+  current: boolean;
+  /** the remote branch the local branch tracks now (null when it tracks nothing or does not exist) */
+  upstream: string | null;
+}
+
 /** A commit of the remote's that a force push would drop. */
 export interface ForcePushCommit {
   hash: string;

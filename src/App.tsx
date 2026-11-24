@@ -16,6 +16,7 @@ import { Toolbar } from './components/Toolbar';
 import { basename, parseTrack, samePath } from './util';
 import { createPrUrl, isSafePrUrl, mergedPrNumber, publishedName, pullRequestUrl } from './pullRequests';
 import { forcePushNotice, forcePushText } from './forcePush';
+import { checkoutTargets, resetPrompt } from './remoteCheckout';
 import { DEFAULT_REFS_W, MAIN_COLOR_BY_GROUP, WIP_HASH, computeGraph, findMainLines, pinWithWip } from './graph';
 import { PictureSourcesProvider } from './components/AuthorPicture';
 import { SettingsDialog } from './components/SettingsDialog';
@@ -37,6 +38,7 @@ import type {
   PullRequest,
   PullRequestInfo,
   RefsData,
+  RemoteCheckoutInfo,
   RemoteWeb,
   RepoSnapshot,
   RewordResult,
@@ -883,17 +885,20 @@ export function App() {
 
   // Git refuses to switch when uncommitted changes would be overwritten. Instead of a bare error,
   // offer to stash those changes first (they stay in the stash list and show in the graph).
-  const checkout = (ref: string, kind: 'local' | 'remote' | 'commit') => {
+  //
+  // A remote branch whose local branch of the same name is somewhere else is first asked about: checking the local
+  // branch out as it is (what git does) leaves you away from the remote commit, so the choice is to reset it there.
+  const doCheckout = (ref: string, kind: 'local' | 'remote' | 'commit', reset = false) => {
     const run = (stashFirst: boolean) =>
       act(
-        stashFirst ? 'Stashing and checking out' : 'Checking out',
+        stashFirst ? 'Stashing and checking out' : reset ? 'Resetting and checking out' : 'Checking out',
         async () => {
           if (stashFirst) await git('stashPush', { message: `Auto-stash before checkout of ${ref}` });
-          await git('checkout', { ref, kind });
+          await git('checkout', { ref, kind, reset });
         },
         {
-          ok: stashFirst ? `Stashed your changes and checked out ${ref}` : `Checked out ${ref}`,
-          undo: { label: `Checkout ${ref}` },
+          ok: stashFirst ? `Stashed your changes and checked out ${ref}` : reset ? `Reset ${ref.slice(ref.indexOf('/') + 1)} to ${ref} and checked it out` : `Checked out ${ref}`,
+          undo: { label: reset ? `Reset ${ref.slice(ref.indexOf('/') + 1)} to ${ref}` : `Checkout ${ref}` },
           onError: stashFirst
             ? undefined
             : (msg) => {
@@ -914,20 +919,31 @@ export function App() {
       );
     void run(false);
   };
-
-  // Branches that can be checked out from a commit: local branches pointing at it, and
-  // remote branches pointing at it that have no local branch of the same name yet.
-  const branchesAt = (hash: string) => {
-    const localNames = new Set((refs?.branches ?? []).map((b) => b.name));
-    const locals = (refs?.branches ?? []).filter((b) => b.hash === hash && !b.current).map((b) => b.name);
-    const remotes = (refs?.remoteBranches ?? [])
-      .filter((r) => r.hash === hash && !localNames.has(r.name.slice(r.name.indexOf('/') + 1)))
-      .map((r) => r.name);
-    return [
-      ...locals.map((name) => ({ name, kind: 'local' as const, label: `Checkout ${name}` })),
-      ...remotes.map((name) => ({ name, kind: 'remote' as const, label: `Checkout ${name} (new local branch)` })),
-    ];
+  const checkout = (ref: string, kind: 'local' | 'remote' | 'commit') => {
+    if (kind !== 'remote') return doCheckout(ref, kind);
+    void (async () => {
+      let info: RemoteCheckoutInfo;
+      try {
+        info = await git<RemoteCheckoutInfo>('remoteCheckoutInfo', { ref });
+      } catch (e) {
+        return notifyError((e as Error).message);
+      }
+      const ask = resetPrompt(info);
+      if (!ask) return doCheckout(ref, kind); // no local branch yet, or it is already there
+      setConfirm({
+        title: ask.title,
+        message: ask.message,
+        confirm: ask.confirm,
+        danger: ask.danger,
+        alt: ask.keep ? { label: ask.keep, onClick: () => doCheckout(ref, kind) } : undefined,
+        onConfirm: () => doCheckout(ref, kind, true),
+      });
+    })();
   };
+
+  // Branches that can be checked out from a commit: local branches pointing at it, and remote branches pointing at it
+  // (a new local branch, or the local one of the same name reset to here).
+  const branchesAt = (hash: string) => checkoutTargets(refs?.branches ?? [], refs?.remoteBranches ?? [], hash);
 
   // Every branch (local, or remote) at a commit that could be merged into the current branch.
   const mergeTargetsAt = (hash: string) => {

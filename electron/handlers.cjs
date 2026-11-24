@@ -424,6 +424,12 @@ async function pushTarget(repo) {
 
 const IGNORED_MAX = 20000; // ignored folders / files named to the watcher, each
 
+/** The remote branch a local branch tracks (`origin/master`), or null when it tracks nothing. */
+async function upstreamOf(repo, branch) {
+  const out = await run(repo, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { okCodes: [0, 128] }).catch(() => '');
+  return out.trim() || null;
+}
+
 /** The remote that is hosted on GitHub or Azure DevOps (origin first), with the addresses worked out from its URL. */
 async function hostedRemote(repo) {
   const remotes = (await run(repo, ['remote', '-v']).catch(() => ''))
@@ -851,14 +857,48 @@ const handlers = {
     return { pushed: `${remote}/${branch}` };
   },
 
-  async checkout({ repo, ref, kind }) {
+  /**
+   * How a remote branch relates to the local branch of the same name, for the question asked before checking it out:
+   * `relation` is none (no local branch yet), same, behind (the remote is further on), ahead (the local branch has commits
+   * the remote lacks) or diverged; `ahead` / `behind` count the commits on each side only.
+   */
+  async remoteCheckoutInfo({ repo, ref }) {
+    assertRepo(repo);
+    safeRef(ref);
+    const remoteHash = (await run(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${ref}^{commit}`], { okCodes: [0, 1] })).trim();
+    if (!remoteHash) throw new Error(`${ref} is not a remote branch`);
+    const local = ref.slice(ref.indexOf('/') + 1);
+    const localHash = (await run(repo, ['rev-parse', '--verify', '-q', `refs/heads/${local}^{commit}`], { okCodes: [0, 1] })).trim() || null;
+    const current = (await run(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { okCodes: [0, 1] })).trim() === local;
+    let ahead = 0;
+    let behind = 0;
+    if (localHash && localHash !== remoteHash) {
+      [ahead, behind] = (await run(repo, ['rev-list', '--left-right', '--count', `${localHash}...${remoteHash}`])).trim().split(/\s+/).map(Number);
+    }
+    const relation = !localHash ? 'none' : localHash === remoteHash ? 'same' : ahead === 0 ? 'behind' : behind === 0 ? 'ahead' : 'diverged';
+    // what the local branch tracks now: after a reset to another remote's branch it keeps tracking this, not the new one
+    const upstream = localHash ? await upstreamOf(repo, local) : null;
+    return { local, remote: ref, localHash, remoteHash, ahead, behind, relation, current, upstream };
+  },
+
+  /**
+   * Checks something out. For a remote branch: with no local branch of that name one is created to track it; with one,
+   * that local branch is checked out as it is, unless `reset` is set, which first moves it to the remote branch's commit
+   * (`git checkout -B`; the commits it had stay in the reflog). Uncommitted changes that are in the way make git refuse.
+   */
+  async checkout({ repo, ref, kind, reset }) {
     assertRepo(repo);
     safeRef(ref);
     if (kind === 'remote') {
       const local = ref.slice(ref.indexOf('/') + 1);
       const existing = await run(repo, ['rev-parse', '--verify', '-q', `refs/heads/${local}`], { okCodes: [0, 1] });
-      if (existing.trim()) await run(repo, ['checkout', local]);
-      else await run(repo, ['checkout', '-b', local, '--track', ref]);
+      if (!existing.trim()) await run(repo, ['checkout', '-b', local, '--track', ref]);
+      else if (reset === true) {
+        // Track the remote branch only if the local one tracks nothing yet or already tracks it. A branch that tracks
+        // another remote's (origin/master, reset to upstream/master) keeps that: pushing must not start going elsewhere.
+        const upstream = await upstreamOf(repo, local);
+        await run(repo, ['checkout', '-B', local, !upstream || upstream === ref ? '--track' : '--no-track', ref]);
+      } else await run(repo, ['checkout', local]);
     } else if (kind === 'commit') {
       await run(repo, ['checkout', '--detach', ref]);
     } else {

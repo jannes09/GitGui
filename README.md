@@ -47,7 +47,15 @@ opening each diff. The × at the right of a diff closes it (or press Esc).
 **Graph:** stashes appear as dashed rows above the commit they were made on (right-click to pop, apply or drop),
 branch pills show `↑` / `↓` for unpushed / unpulled commits, and a commit's right-click menu offers checkout and
 merge for every branch on it. Double-click a commit that has a branch label to check that branch out. If
-uncommitted changes block a checkout you are offered "Stash & checkout". Text in graph rows cannot be selected, so the
+uncommitted changes block a checkout you are offered "Stash & checkout". Checking out a remote branch (its commit in the
+graph, or the sidebar) creates a local branch that tracks it when there is none. When a local branch of the same name
+already exists somewhere else (say `master` is behind `origin/master`), the app asks "Reset local master to origin/master?"
+and says how they differ: *Reset … and check it out* moves the local branch to the remote's commit (a warning when it
+has commits the remote lacks, which leave the branch but can be brought back with Ctrl+Z), *Just check out master*
+switches to the local branch as it is, and Cancel does nothing. This works for every remote branch, not just the main
+one, and for branches of a second remote: a local branch that tracks another remote's branch (a fork's `origin/master`
+reset to `upstream/master`) keeps tracking it, so a later push does not start going somewhere else, and the prompt says
+so. Text in graph rows cannot be selected, so the
 double-click that checks out a branch never also highlights a word of its pill; the commit message in the details panel
 can still be selected and copied. Everything that can be clicked (buttons, graph rows, sidebar items, file rows, repository
 tabs, the switches in Settings, the Amend checkbox) shows a pointer cursor and a hover highlight; `test/hover.test.mjs`
