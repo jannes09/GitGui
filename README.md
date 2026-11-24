@@ -208,6 +208,15 @@ starts, which takes around 9 s before the splash can appear. The installer (`npm
 admin rights needed) unpacks once, so the splash shows within half a second. Use the installer for daily use and pin the
 installed shortcut; the portable exe is for carrying the app around.
 
+**Desktop shortcut is optional:** the installer's wizard has an "Additional tasks" page after the installation folder with
+"Create a desktop shortcut", **unticked** on a fresh install (the Start menu shortcut is always made). Running Setup again
+to update starts the box **ticked** when a desktop shortcut already exists, so an update does not take away a shortcut you
+have; untick it to drop the shortcut. A silent install (`/S`) follows the same default. electron-builder is told not to make
+the shortcut itself (`nsis.createDesktopShortcut: false`) and `build/installer.nsh` adds the page, creates the shortcut when
+chosen and removes it on uninstall. `test/installer.test.cjs` compiles that script into a stand-in installer with the NSIS
+electron-builder downloads and runs its cases (Windows only, skipped when that NSIS is not there); it uses a shortcut name of
+its own, so your real GitGui shortcut is never touched.
+
 **Updates from a local folder:** when GitGui starts it looks in a folder on this computer for a newer build and, if there
 is one, asks whether to install it (Install and restart, Later, or Skip this version). Nothing is downloaded and nothing
 leaves the computer. The folder is the one `npm run dist` / `dist:installer` write to (`release/`); the build records
