@@ -25,7 +25,7 @@ interface Props {
   onSelect: (root: string) => void;
   onClose: (root: string) => void;
   onRename: (root: string) => void;
-  onAdd: () => void;
+  onAdd: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onMove: (from: number, to: number) => void;
   onContext: (e: React.MouseEvent, root: string) => void;
 }
@@ -127,7 +127,7 @@ export function RepoTabs({ tabs, active, info, onSelect, onClose, onRename, onAd
           </div>
         );
       })}
-      <button className="rt-add" onClick={onAdd} title="Open another repository" aria-label="Open another repository">
+      <button className="rt-add" onClick={onAdd} title="Open or clone a repository" aria-label="Open or clone a repository">
         <Icon name="plus" size={15} />
       </button>
     </div>

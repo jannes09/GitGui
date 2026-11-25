@@ -8,6 +8,7 @@ import { DiffView } from './components/DiffView';
 import { GraphView } from './components/GraphView';
 import { Splitter } from './components/Splitter';
 import { AccountsDialog } from './components/AccountsDialog';
+import { CloneDialog, type CloneSpec } from './components/CloneDialog';
 import { EditMessageDialog, type EditMessageSpec } from './components/EditMessageDialog';
 import { ConfirmDialog, ContextMenu, PromptDialog, type ConfirmSpec, type MenuItem, type PromptSpec } from './components/Overlays';
 import { CommitPanel, StagingPanel } from './components/RightPanel';
@@ -52,6 +53,7 @@ import type {
 const LAST_REPO_KEY = 'gitgui.lastRepo';
 const RECENT_KEY = 'gitgui.recent';
 const TABS_KEY = 'gitgui.tabs';
+const CLONE_PARENT_KEY = 'gitgui.cloneParent';
 const PAGE = 1000;
 const MAX_HISTORY = 50;
 
@@ -146,6 +148,7 @@ export function App() {
   const [web, setWeb] = useState<RemoteWeb | null>(null); // the remote's pages, for a merge commit's pull request shortcut
   const lastPr = useRef({ root: '', at: 0, authenticated: false });
   const [acctDialog, setAcctDialog] = useState(false);
+  const [cloneSpec, setCloneSpec] = useState<CloneSpec | null>(null);
   const [settings, setSettings] = useState<Settings>(readSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef(settings);
@@ -874,6 +877,18 @@ export function App() {
     }
   }, [openRepo]);
 
+  const cloneDialog = useCallback(() => {
+    setCloneSpec({
+      parent: readStore(CLONE_PARENT_KEY) ?? '',
+      onClone: async (url, parent, name) => {
+        const info = await call<{ root: string; name: string }>('clone', { url, parent, name });
+        writeStore(CLONE_PARENT_KEY, parent);
+        await openRepo(info.root);
+        notify(`Cloned ${info.name}`);
+      },
+    });
+  }, [openRepo, notify]);
+
   const askBranch = (from?: string) =>
     setPrompt({
       title: 'Create branch',
@@ -1597,11 +1612,28 @@ export function App() {
     [tabInfo, repo, status],
   );
 
+  // The + at the end of the tabs: open an existing repository or clone one.
+  const addMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation(); // the menu closes on any window click, including this one
+    const r = e.currentTarget.getBoundingClientRect();
+    setMenu({
+      x: r.left,
+      y: r.bottom + 4,
+      items: [
+        { label: 'Open repository…', onClick: () => void openDialog() },
+        { label: 'Clone repository…', onClick: cloneDialog },
+      ],
+    });
+  };
+
   const repoMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation(); // the menu closes on any window click, including this one
     const r = e.currentTarget.getBoundingClientRect();
     const sep: MenuItem = { label: '', onClick: () => {}, separator: true };
-    const items: MenuItem[] = [{ label: 'Open repository…', onClick: () => void openDialog() }];
+    const items: MenuItem[] = [
+      { label: 'Open repository…', onClick: () => void openDialog() },
+      { label: 'Clone repository…', onClick: cloneDialog },
+    ];
     const others = recent.filter((p) => !tabs.some((t) => samePath(t.root, p)));
     if (others.length) {
       items.push(sep, { label: 'Recent', disabled: true, onClick: () => {} }, ...others.map((p) => ({ label: p, onClick: () => void openRepo(p) })));
@@ -1692,7 +1724,7 @@ export function App() {
         onSelect={(root) => void openRepo(root)}
         onClose={closeTab}
         onRename={renameTab}
-        onAdd={() => void openDialog()}
+        onAdd={addMenu}
         onMove={moveTab}
         onContext={tabMenu}
       />
@@ -1886,9 +1918,14 @@ export function App() {
           <div className="welcome-card">
             <h1>GitGui</h1>
             <p>Open a Git repository to see its history, branches and changes.</p>
-            <button className="btn primary big" onClick={() => void openDialog()}>
-              <Icon name="folder" size={16} /> Open repository
-            </button>
+            <div className="welcome-actions">
+              <button className="btn primary big" onClick={() => void openDialog()}>
+                <Icon name="folder" size={16} /> Open repository
+              </button>
+              <button className="btn big" onClick={cloneDialog}>
+                <Icon name="pull" size={16} /> Clone repository
+              </button>
+            </div>
             {recent.length > 0 && (
               <div className="recent">
                 <h4>Recent</h4>
@@ -1913,6 +1950,7 @@ export function App() {
       )}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {prompt && <PromptDialog spec={prompt} onClose={() => setPrompt(null)} />}
+      {cloneSpec && <CloneDialog spec={cloneSpec} onClose={() => setCloneSpec(null)} />}
       {editMsg && (
         <EditMessageDialog
           spec={editMsg}
