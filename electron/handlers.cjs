@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { parseRemoteUrl, parseCredentialOutput, listPullRequests } = require('./pullrequests.cjs');
 const updates = require('./updates.cjs');
+const { createProgressParser } = require('./cloneprogress.cjs');
 
 const ENV = {
   ...process.env,
@@ -32,7 +33,10 @@ function run(repo, args, opts = {}) {
     const out = [];
     const err = [];
     child.stdout.on('data', (d) => out.push(d));
-    child.stderr.on('data', (d) => err.push(d));
+    child.stderr.on('data', (d) => {
+      err.push(d);
+      if (opts.onStderr) opts.onStderr(d);
+    });
     child.on('error', (e) => reject(new Error(e.code === 'ENOENT' ? 'git was not found on PATH' : e.message)));
     child.on('close', (code) => {
       const stdout = Buffer.concat(out).toString('utf8');
@@ -442,6 +446,45 @@ async function hostedRemote(repo) {
 }
 
 const handlers = {
+  // Clones `url` into <parent>/<name> and returns the new repository's folder. The target folder must not exist
+  // yet (or be empty), so nothing already on disk is ever overwritten. `ctx.progress({ step, percent, detail })`
+  // is called while git downloads (percent is the overall 0-100).
+  async clone({ url, parent, name }, ctx = {}) {
+    if (typeof url !== 'string' || !url.trim() || url.trim().startsWith('-') || /[\0\r\n]/.test(url)) {
+      throw new Error('Invalid repository address');
+    }
+    if (typeof parent !== 'string' || !path.isAbsolute(parent) || !fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+      throw new Error('The folder to clone into was not found');
+    }
+    // Same rules as the Clone dialog (src/clone.ts). Windows silently drops a trailing dot or space and
+    // treats names like CON as devices, so those would end up somewhere other than where we say.
+    const folder = typeof name === 'string' ? name.trim() : '';
+    if (
+      !folder ||
+      folder === '.' ||
+      folder === '..' ||
+      /[\\/<>:"|?*\0-\x1f]/.test(folder) ||
+      /[. ]$/.test(folder) ||
+      /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(folder)
+    ) {
+      throw new Error('Invalid folder name');
+    }
+    const target = path.join(parent, folder);
+    if (fs.existsSync(target) && (!fs.statSync(target).isDirectory() || fs.readdirSync(target).length > 0)) {
+      throw new Error(`The folder ${target} already exists and is not empty`);
+    }
+    const parser = ctx.progress ? createProgressParser(ctx.progress) : null;
+    try {
+      await run(parent, ['clone', '--progress', '--', url.trim(), target], {
+        literal: false,
+        onStderr: parser ? (d) => parser.write(d) : undefined,
+      });
+    } finally {
+      parser?.end();
+    }
+    return { root: path.normalize(target), name: path.basename(target) };
+  },
+
   async openRepo({ path: p }) {
     assertRepo(p);
     const root = (await run(p, ['rev-parse', '--show-toplevel'])).trim();
@@ -1300,11 +1343,12 @@ const handlers = {
   },
 };
 
-async function call(method, args) {
+// `ctx` is for the caller to receive more than the final result, e.g. { progress } while a clone downloads.
+async function call(method, args, ctx = {}) {
   const fn = Object.prototype.hasOwnProperty.call(handlers, method) ? handlers[method] : null;
   if (!fn) return { ok: false, error: `Unknown method: ${method}` };
   try {
-    const data = await fn(args && typeof args === 'object' ? args : {});
+    const data = await fn(args && typeof args === 'object' ? args : {}, ctx);
     return { ok: true, data: data === undefined ? null : data };
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : String(e) };

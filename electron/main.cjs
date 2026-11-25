@@ -181,7 +181,11 @@ ipcMain.handle('watch:set', (event, roots) => {
 
 ipcMain.handle('git:call', (event, method, args) => {
   if (!isTrusted(event.senderFrame ? event.senderFrame.url : '')) return { ok: false, error: 'Untrusted caller' };
-  return handlers.call(method, args);
+  // methods that take a while (clone) report progress back to the window that asked
+  const progress = (p) => {
+    if (!event.sender.isDestroyed()) event.sender.send('git:progress', method, p);
+  };
+  return handlers.call(method, args, { progress });
 });
 
 ipcMain.handle('dialog:pickFolder', async (event, title) => {

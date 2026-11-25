@@ -1,5 +1,12 @@
 type Reply = { ok: true; data: unknown } | { ok: false; error: string };
 
+/** Progress of a long running call (a clone): the step git is on, the overall 0-100 and e.g. the download speed. */
+export interface Progress {
+  step: string;
+  percent: number;
+  detail: string;
+}
+
 declare global {
   interface Window {
     gitApi?: {
@@ -8,6 +15,7 @@ declare global {
       installUpdate: (folder: string, version: string) => Promise<Reply>;
       watchRepos?: (roots: string[]) => Promise<boolean>;
       onRepoChanged?: (cb: (root: string) => void) => () => void;
+      onProgress?: (cb: (method: string, p: Progress) => void) => () => void;
     };
   }
 }
@@ -38,6 +46,11 @@ export async function pickFolder(title?: string): Promise<string | null> {
 /** Asks the desktop app to watch these repositories for changes on disk (none in a plain browser). */
 export function watchRepos(roots: string[]): void {
   void window.gitApi?.watchRepos?.(roots).catch(() => {});
+}
+
+/** Calls `cb` with the progress of `method` while it runs (desktop app only). Returns the function that stops listening. */
+export function onProgress(method: string, cb: (p: Progress) => void): () => void {
+  return window.gitApi?.onProgress?.((m, p) => m === method && cb(p)) ?? (() => {});
 }
 
 /** Calls `cb` with a repository's root when it changed on disk. Returns the function that stops listening. */
